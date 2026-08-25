@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "verbatimModuleSyntax": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": {
+      "@tank/protocol": ["packages/protocol/src/index.ts"],
+      "@tank/protocol/*": ["packages/protocol/src/*"],
+      "@tank/shared-sim": ["packages/shared-sim/src/index.ts"],
+      "@tank/shared-sim/*": ["packages/shared-sim/src/*"]
+    }
+  }
+}

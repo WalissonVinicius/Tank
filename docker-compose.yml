@@ -1,0 +1,14 @@
+services:
+  tank:
+    build: .
+    image: tank-ricochete
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      DATA_DIR: /app/data
+      WEBHOOK_URL: ${WEBHOOK_URL:-}
+    volumes:
+      - ./data:/app/data

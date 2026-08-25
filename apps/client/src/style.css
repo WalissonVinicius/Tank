@@ -1,0 +1,2687 @@
+/* ============================================================================================
+   TANK RICOCHETE — camada de interface
+   --------------------------------------------------------------------------------------------
+   FASE 10 — a interface virou DESENHO ANIMADO. O usuário disse que a versão anterior tinha
+   "cara de IA": painel translúcido cinza-azulado, borda de 1 px, tipografia neutra e sombra
+   difusa de dashboard. Tudo isso saiu. O vocabulário agora é:
+
+     · COR CHAPADA E SATURADA — o painel TEM cor, não transparência. Nada de vidro fosco;
+     · CONTORNO ESCURO GROSSO em tudo (`--traco`), o mesmo que o tanque já tem no desenho;
+     · SOMBRA DURA — deslocamento sólido (`0 Npx 0 var(--traco)`), sem blur nenhum;
+     · NÚMEROS GORDOS COM CONTORNO (`--contorno`, um text-shadow em 8 direções);
+     · CANTO ARREDONDADO no lugar do chanfro industrial da Fase 6 — é o corte que separa
+       "chapa de máquina" de "peça de jogo".
+
+   A ARENA NÃO MUDOU: piso, parede e iluminação continuam metálicos (`render/*`). O que ficou
+   mais vivo foram só as cores dos jogadores (`protocol/colors.ts`), que era o que o usuário
+   liberou junto ("o mapa pode ser o metálico. cor dos tank pode ser mais viva também").
+
+   Glow (halo colorido) segue reservado ao que EMITE luz — bala, muzzle flash, relógio crítico.
+   Painel de interface usa contorno + sombra dura, nunca halo.
+   ============================================================================================ */
+
+:root {
+  --fd: 'Chakra Petch', system-ui, sans-serif;
+  --fb: 'Sora', system-ui, sans-serif;
+
+  --bg: #0b0f1a;
+  --piso: #141a2b;
+  --parede: #1f2a44;
+  --parede-topo: #3a4a73;
+
+  /* Paleta de interface — chapada e saturada. */
+  --traco: #0a0e18; /* contorno e sombra dura de TUDO */
+  --amarelo: #ffd400;
+  --amarelo-2: #ffa800; /* degrau vencido: mesmo matiz, um passo mais escuro */
+  --laranja: #ff7a1a;
+  --vermelho: #ff2e55;
+  --verde: #4ce052;
+  --azul: #2ec6ff;
+  --roxo: #a15cff;
+  --creme: #fff6e0;
+  --texto: #eaf0ff;
+  --texto-fraco: #94a4c6;
+
+  /* Painéis: cor CHEIA, não translúcida. O fundo do jogo já está desfocado atrás. */
+  --painel: #1c2645;
+  --painel-2: #141c36;
+  --painel-3: #0e1428;
+
+  /* Contorno de texto em 8 direções — o que dá a leitura de rótulo de desenho animado.
+     `-webkit-text-stroke` afinaria o glifo (o traço nasce centrado); isto engorda. */
+  --contorno:
+    -2px -2px 0 var(--traco), 2px -2px 0 var(--traco), -2px 2px 0 var(--traco), 2px 2px 0 var(--traco),
+    -3px 0 0 var(--traco), 3px 0 0 var(--traco), 0 -3px 0 var(--traco), 0 3px 0 var(--traco);
+  --contorno-fino:
+    -1px -1px 0 var(--traco), 1px -1px 0 var(--traco), -1px 1px 0 var(--traco), 1px 1px 0 var(--traco),
+    -2px 0 0 var(--traco), 2px 0 0 var(--traco), 0 -2px 0 var(--traco), 0 2px 0 var(--traco);
+
+  --r: 14px; /* raio padrão dos blocos */
+  --b: 3px; /* espessura do contorno padrão */
+
+  /* Fator de escala do HUD em tela cheia (Fase 8). Publicado por ui/layout.ts a cada resize:
+     cresce com a altura da janela e é limitado a [0,82; 1,5] — em 2560×1440 o HUD acompanha a
+     tela sem virar outdoor, em 1366×768 encolhe sem ficar ilegível. Todo tamanho do HUD in-game
+     é `calc(var(--k) * <medida do desenho original>)`. */
+  --k: 1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--texto);
+  font-family: var(--fb);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+}
+
+#game {
+  position: absolute;
+  inset: 0;
+  transition: filter 260ms ease, transform 260ms ease;
+}
+
+#game canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* A mira é desenhada no canvas (Renderer.setCrosshair) — o cursor do SO por cima dela seria
+     um segundo ponteiro competindo pela atenção. */
+  cursor: none;
+}
+
+/* Fora do jogo a arena continua rodando atrás (ui/vitrine.ts), mas desfocada e escurecida:
+   dá vida à tela sem competir com a leitura do lobby / do resultado. O `scale` evita a borda
+   transparente que o blur cria no limite do canvas. */
+#app.fundo-vivo #game {
+  filter: blur(5px) brightness(0.8) saturate(0.85);
+  transform: scale(1.05);
+}
+
+#app.fundo-vivo #game canvas {
+  cursor: default;
+}
+
+.tela {
+  display: none;
+  position: absolute;
+  inset: 0;
+}
+
+.tela.ativa {
+  display: block;
+}
+
+#erro {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 99;
+  background: #300;
+  color: #f66;
+  font: 12px/1.4 monospace;
+  white-space: pre-wrap;
+  padding: 8px;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   PEÇAS REUTILIZÁVEIS
+   --------------------------------------------------------------------------------------------- */
+
+/* Envelope dos ícones — SVG desenhado em código (ui/icons.ts). A sombra é DURA (offset sólido,
+   sem blur), acompanhando a silhueta do vetor, para combinar com o resto da linguagem. */
+.icone-3d {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 3px 0 rgba(10, 14, 24, 0.85));
+  user-select: none;
+}
+
+.svg-icone {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* ----- EMBLEMA ANIMAL (Fase 11) -----
+   O bicho de cada jogador, desenhado em código (render/animais.ts) e servido como `data:` URL.
+   Ele é da COR DO JOGADOR e quase toda faixa onde aparece (vaga do lobby, linha do placar,
+   pódio) é chapada NA MESMA COR — daí a pastilha escura: sem ela a silhueta some dentro da
+   própria tinta. O tamanho sai em `em` de propósito, para acompanhar sozinho o `--k` do HUD.  */
+.bicho {
+  flex: none;
+  display: inline-block;
+  width: 1.5em;
+  height: 1.5em;
+  padding: 0.08em;
+  vertical-align: -0.42em;
+  background: rgba(6, 9, 17, 0.94);
+  border: 1px solid rgba(233, 238, 248, 0.16);
+  border-radius: 50%;
+  user-select: none;
+}
+
+.bicho.medio {
+  width: 1.9em;
+  height: 1.9em;
+  vertical-align: -0.62em;
+}
+
+/* Brasão do campeão: acompanha o nome gigante da tela de vencedor. */
+.bicho.brasao {
+  width: 0.92em;
+  height: 0.92em;
+  padding: 0.05em;
+  margin-right: 0.14em;
+  vertical-align: -0.14em;
+  border-width: 3px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+kbd {
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  display: inline-block;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  text-align: center;
+  color: var(--traco);
+  background: var(--creme);
+  border: 2px solid var(--traco);
+  border-radius: 6px;
+  box-shadow: 0 3px 0 var(--traco);
+}
+
+kbd.larga {
+  min-width: 52px;
+}
+
+/* Botão de jogo: pastilha amarela cheia, contorno preto grosso, sombra dura que some quando o
+   botão é pressionado (o botão afunda de verdade, não muda de opacidade). */
+.botao-jogo {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 14px 22px;
+  font-family: var(--fd);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-indent: 0.14em;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 6px 0 var(--traco);
+  transition: transform 80ms ease, box-shadow 80ms ease, filter 120ms ease;
+}
+
+.botao-jogo:hover:not(:disabled) {
+  filter: brightness(1.07) saturate(1.1);
+}
+
+.botao-jogo:active:not(:disabled) {
+  transform: translateY(5px);
+  box-shadow: 0 1px 0 var(--traco);
+}
+
+.botao-jogo:disabled {
+  color: rgba(234, 240, 255, 0.35);
+  background: #2b3760;
+  cursor: default;
+  box-shadow: 0 6px 0 var(--traco);
+}
+
+.botao-jogo.secundario {
+  color: var(--texto);
+  background: #35447a;
+}
+
+.botao-jogo.grande {
+  font-size: 21px;
+  padding: 18px 26px;
+  letter-spacing: 0.18em;
+  text-indent: 0.18em;
+}
+
+.botao-jogo.pronto {
+  color: var(--traco);
+  background: var(--verde);
+}
+
+/* ---------------------------------------------------------------------------------------------
+   HUD
+   --------------------------------------------------------------------------------------------- */
+
+#hud {
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Durante a AÇÃO a placa da rodada recua: qual rodada é não muda nenhuma decisão dentro dos 45 s.
+   Na contagem regressiva ela volta ao peso cheio, que é quando a informação importa. */
+#hud.em-acao #hud-rodada {
+  opacity: 0.72;
+}
+
+/* ----- botão de tela cheia (fora das `.tela`: vale no lobby, no jogo e no placar) ----- */
+#btn-tela-cheia {
+  position: absolute;
+  right: calc(var(--k) * 16px);
+  bottom: calc(var(--k) * 16px);
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--k) * 7px);
+  padding: calc(var(--k) * 7px) calc(var(--k) * 11px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 11px);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-indent: 0.18em;
+  color: var(--texto);
+  background: var(--painel-2);
+  border: 2px solid var(--traco);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: 0 3px 0 var(--traco);
+  opacity: 0.72;
+  transition: opacity 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+#btn-tela-cheia:hover,
+#btn-tela-cheia:focus-visible {
+  opacity: 1;
+  color: var(--traco);
+  background: var(--amarelo);
+}
+
+#btn-tela-cheia svg {
+  display: block;
+  width: calc(var(--k) * 15px);
+  height: calc(var(--k) * 15px);
+}
+
+#btn-tela-cheia.ativo {
+  color: var(--traco);
+  background: var(--amarelo);
+  opacity: 1;
+}
+
+/* Fase 9: na hora do jogo a tela é da arena — nenhum botão, nenhuma legenda de canto (pedido do
+   usuário). O atalho `F` continua ligado; some só o alvo de clique. `visibility` junto com
+   `opacity` para o botão sair da ordem de Tab e não roubar o clique de tiro. */
+body.em-jogo #btn-tela-cheia {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* ----- canto superior esquerdo: RODADA -----
+   Fase 10, refeito. Antes: rótulo apagado e dez tiras finas de 13×7 px que, juntas e sem
+   contorno, viravam "uma barra cinza" no canto (palavra do usuário). Agora a rodada é uma FICHA
+   amarela com o número gordo e, embaixo, degraus grossos com contorno — dá para ler a partida
+   inteira de relance, e cada degrau é uma peça, não um pixel. */
+#hud-rodada {
+  position: absolute;
+  left: calc(var(--k) * 16px);
+  top: calc(var(--k) * 14px);
+  transition: opacity 220ms ease;
+}
+
+/* Rótulo e ficha na MESMA linha: empilhados, o bloco passava de 100 px de altura e invadia a
+   arena, deixando os degraus por cima da parede do labirinto. Deitado, ele cabe na faixa que
+   `ui/layout.ts` reserva no topo. */
+#hud-rodada .topo {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--k) * 8px);
+}
+
+#hud-rodada .lbl {
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 11px);
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  color: var(--amarelo);
+  text-shadow: var(--contorno-fino);
+}
+
+#hud-rodada .ficha {
+  display: inline-flex;
+  align-items: baseline;
+  gap: calc(var(--k) * 2px);
+  padding: calc(var(--k) * 3px) calc(var(--k) * 12px) calc(var(--k) * 5px);
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: calc(var(--k) * 12px);
+  box-shadow: 0 calc(var(--k) * 4px) 0 var(--traco);
+  font-family: var(--fd);
+  line-height: 1;
+}
+
+#hud-rodada .ficha b {
+  font-size: calc(var(--k) * 30px);
+  font-weight: 700;
+  color: var(--traco);
+}
+
+#hud-rodada .ficha span {
+  font-size: calc(var(--k) * 15px);
+  font-weight: 700;
+  color: rgba(10, 14, 24, 0.55);
+}
+
+/* Degraus da partida: vencido é amarelo cheio, o de agora é creme e pula, o que falta é vazado
+   escuro. Todos com o mesmo contorno preto — é ele que impede a fileira de virar borrão. */
+#hud-rodada .pips {
+  display: flex;
+  gap: calc(var(--k) * 3px);
+  margin-top: calc(var(--k) * 9px);
+}
+
+#hud-rodada .pips i {
+  display: block;
+  width: calc(var(--k) * 14px);
+  height: calc(var(--k) * 11px);
+  /* Navio médio, não preto: os degraus que faltam ficam sobre a faixa PRETA reservada no topo,
+     e um vazado escuro ali some por completo. */
+  background: #2b3a68;
+  border: calc(var(--k) * 2px) solid var(--traco);
+  border-radius: calc(var(--k) * 4px);
+}
+
+#hud-rodada .pips i.feito {
+  background: var(--amarelo-2);
+}
+
+#hud-rodada .pips i.agora {
+  background: var(--creme);
+  animation: pip-vivo 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes pip-vivo {
+  from {
+    transform: translateY(0) scale(1);
+  }
+  to {
+    transform: translateY(calc(var(--k) * -3px)) scale(1.1);
+  }
+}
+
+/* ----- topo central: RELÓGIO -----
+   Fase 10, refeito. Antes: número branco solto numa faixa escura, sem cor e sem forma própria.
+   Agora é uma PLACA AMARELA com o número escuro por cima — a maior mancha de cor da tela depois
+   da arena, exatamente como o usuário pediu ("o tempo precisa ser a informação mais legível da
+   tela depois da arena"). Nos últimos 10 s a placa inteira vira vermelha e bate no mesmo
+   compasso do tique do zzfx (ver `contagemSonora` em main.ts). */
+#hud-relogio {
+  position: absolute;
+  left: 50%;
+  top: calc(var(--k) * 10px);
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+#hud-relogio .placa-tempo {
+  position: relative;
+  min-width: calc(var(--k) * 152px);
+  padding: calc(var(--k) * 4px) calc(var(--k) * 18px) calc(var(--k) * 9px);
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: calc(var(--k) * 16px);
+  box-shadow: 0 calc(var(--k) * 5px) 0 var(--traco);
+  transition: background 180ms ease;
+}
+
+#hud-relogio .lbl {
+  display: block;
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 10px);
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: rgba(10, 14, 24, 0.6);
+}
+
+#hud-relogio .timer {
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 46px);
+  font-weight: 700;
+  line-height: 0.92;
+  font-variant-numeric: tabular-nums;
+  color: var(--traco);
+}
+
+/* Barra de tempo dentro da própria placa: trilho cravado no amarelo, preenchimento escuro.
+   Sem cor nova — a informação aqui é a largura, não o matiz. */
+#hud-relogio .barra {
+  height: calc(var(--k) * 8px);
+  margin: calc(var(--k) * 5px) auto 0;
+  width: calc(var(--k) * 110px);
+  background: rgba(10, 14, 24, 0.2);
+  border: calc(var(--k) * 2px) solid var(--traco);
+  border-radius: calc(var(--k) * 4px);
+  overflow: hidden;
+}
+
+#hud-relogio .barra i {
+  display: block;
+  height: 100%;
+  background: var(--traco);
+  transform-origin: left center;
+  will-change: transform;
+}
+
+/* Único resto do placar que fica em cena: num "último que sobra", saber se restam 2 ou 7 muda
+   como se joga. Pastilha verde, colada embaixo do relógio. */
+#hud-relogio .vivos {
+  display: inline-block;
+  margin-top: calc(var(--k) * 8px);
+  padding: calc(var(--k) * 2px) calc(var(--k) * 12px) calc(var(--k) * 4px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 13px);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-indent: 0.16em;
+  color: var(--traco);
+  background: var(--verde);
+  border: calc(var(--k) * 2px) solid var(--traco);
+  border-radius: calc(var(--k) * 9px);
+  box-shadow: 0 calc(var(--k) * 3px) 0 var(--traco);
+}
+
+/* Últimos 10 s: a placa muda de cor, o número fica creme com contorno e o conjunto bate uma vez
+   por segundo, junto com o bipe. */
+#hud-relogio.baixo .placa-tempo {
+  background: var(--vermelho);
+  animation: bate-relogio 1s cubic-bezier(0.2, 0.9, 0.3, 1) infinite;
+}
+
+#hud-relogio.baixo .lbl {
+  color: rgba(255, 246, 224, 0.85);
+}
+
+#hud-relogio.baixo .timer {
+  color: var(--creme);
+  text-shadow: var(--contorno);
+}
+
+#hud-relogio.baixo .barra {
+  background: rgba(10, 14, 24, 0.3);
+}
+
+@keyframes bate-relogio {
+  0% {
+    transform: scale(1);
+  }
+  12% {
+    transform: scale(1.09);
+  }
+  30% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ----- killfeed: MATADOR ✕ VÍTIMA, uma linha, some em 4 s ----- */
+#hud-feed {
+  position: absolute;
+  right: calc(var(--k) * 16px);
+  top: calc(var(--k) * 14px);
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--k) * 7px);
+  align-items: flex-end;
+  max-width: min(38vw, calc(var(--k) * 360px));
+}
+
+#hud-feed .item {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--k) * 8px);
+  padding: calc(var(--k) * 5px) calc(var(--k) * 12px) calc(var(--k) * 6px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 15px);
+  font-weight: 700;
+  line-height: 1.1;
+  white-space: nowrap;
+  color: var(--texto);
+  background: var(--painel-2);
+  border: calc(var(--k) * 3px) solid var(--traco);
+  border-radius: calc(var(--k) * 11px);
+  box-shadow: 0 calc(var(--k) * 4px) 0 var(--traco);
+  animation: feed-entra 220ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+
+#hud-feed .item.autogol {
+  background: #5b1330;
+}
+
+#hud-feed .item .marca {
+  flex: none;
+  display: block;
+  width: calc(var(--k) * 20px);
+  height: calc(var(--k) * 20px);
+}
+
+#hud-feed .item .quem {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: calc(var(--k) * 130px);
+}
+
+/* O nome vem colorido de `ui/zoeira.ts` (cor do jogador no atributo `style`). O contorno escuro
+   é o que faz a cor saturada ler sobre a pastilha, sem precisar clarear a cor. */
+#hud-feed .item b {
+  font-weight: 700;
+  text-shadow: var(--contorno-fino);
+}
+
+#hud-feed .item .ele-mesmo {
+  font-style: normal;
+  font-weight: 700;
+  color: #ffb3b3;
+}
+
+@keyframes feed-entra {
+  from {
+    opacity: 0;
+    transform: translateX(26px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ----- canto inferior esquerdo: MUNIÇÃO -----
+   Fase 10: UM grupo de marcas e nada mais. Antes havia o ícone de pente (três cartuchos
+   desenhados) ao lado dos três pips de munição, e o usuário leu isso como "2 tipos de munição".
+   O ícone saiu; o que sobrou responde à única pergunta do bloco: quantas balas estão prontas. */
+#hud-municao {
+  position: absolute;
+  left: calc(var(--k) * 16px);
+  bottom: calc(var(--k) * 16px);
+  padding: calc(var(--k) * 7px) calc(var(--k) * 14px) calc(var(--k) * 9px);
+  background: var(--painel-2);
+  border: var(--b) solid var(--traco);
+  border-radius: calc(var(--k) * 14px);
+  box-shadow: 0 calc(var(--k) * 5px) 0 var(--traco);
+  transition: background 160ms ease;
+}
+
+#hud-municao .topo {
+  display: flex;
+  align-items: baseline;
+  gap: calc(var(--k) * 10px);
+  margin-bottom: calc(var(--k) * 7px);
+}
+
+#hud-municao .topo .lbl {
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 10px);
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--amarelo);
+}
+
+#hud-municao .topo b {
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 14px);
+  font-weight: 700;
+  color: var(--texto);
+  max-width: calc(var(--k) * 130px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#hud-municao .marcas {
+  display: flex;
+  gap: calc(var(--k) * 7px);
+}
+
+/* Marca de bala: cápsula cheia com contorno preto. Cheia = pronta; vazada e mais baixa = gasta. */
+#hud-municao .marcas i {
+  display: block;
+  width: calc(var(--k) * 22px);
+  height: calc(var(--k) * 32px);
+  background: var(--amarelo);
+  border: calc(var(--k) * 3px) solid var(--traco);
+  border-radius: calc(var(--k) * 11px) calc(var(--k) * 11px) calc(var(--k) * 5px) calc(var(--k) * 5px);
+  transition: background 120ms ease, transform 120ms ease;
+}
+
+#hud-municao .marcas i.gasta {
+  background: var(--painel-3);
+  transform: scaleY(0.84);
+  transform-origin: bottom center;
+}
+
+#hud-municao .status {
+  margin-top: calc(var(--k) * 7px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 12px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--texto-fraco);
+}
+
+/* Recarregando e eliminado mudam a cor DESTE bloco em vez de acrescentar um segundo indicador
+   ao lado — foi exatamente o segundo grupo que confundiu a leitura antes. */
+#hud-municao.recarregando {
+  background: #513606;
+}
+
+#hud-municao.recarregando .status {
+  color: var(--amarelo);
+}
+
+#hud-municao.morto {
+  background: #4d1022;
+}
+
+#hud-municao.morto .status {
+  color: #ffa8b8;
+}
+
+#hud-municao.morto .marcas i {
+  background: var(--painel-3);
+}
+
+/* A legenda de controles do canto inferior direito saiu na Fase 9 ("na hora do jogo não precisa
+   aparecer os botão, só no lobby"). O esquema de teclas continua no lobby, em `#lobby-sala
+   .bloco-teclas`, que é onde quem chega agora realmente lê. */
+
+/* ----- faixa de eliminado ----- */
+#hud-eliminado {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 36%;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  padding: 16px 0;
+  background: var(--vermelho);
+  border-top: 4px solid var(--traco);
+  border-bottom: 4px solid var(--traco);
+  animation: faixa-entra 320ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+}
+
+#hud-eliminado.ativa {
+  display: flex;
+}
+
+#hud-eliminado .icone-3d {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+
+#hud-eliminado .titulo {
+  font-family: var(--fd);
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  color: var(--creme);
+  text-shadow: var(--contorno);
+}
+
+#hud-eliminado .sub {
+  font-family: var(--fd);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  color: rgba(255, 246, 224, 0.92);
+  margin-top: 6px;
+}
+
+@keyframes faixa-entra {
+  from {
+    opacity: 0;
+    transform: scaleY(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+#hud-reconectando {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+  padding: 14px 28px;
+  font-family: var(--fd);
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: 14px;
+  box-shadow: 0 6px 0 var(--traco);
+}
+
+#hud-reconectando.ativa {
+  display: block;
+}
+
+#hud-reconectando i {
+  font-style: normal;
+  animation: reticencias 0.8s infinite alternate;
+}
+
+@keyframes reticencias {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.25;
+  }
+}
+
+/* Selo de TREINO (Fase 12 §7). Canto inferior direito, o único canto que o HUD mínimo deixa
+   livre durante a ação — munição fica embaixo à esquerda, killfeed em cima à direita. Discreto de
+   propósito: ele só precisa responder "isto está valendo?" para quem olhar. */
+#hud-treino {
+  position: absolute;
+  right: calc(var(--k) * 16px);
+  bottom: calc(var(--k) * 16px);
+  padding: calc(var(--k) * 5px) calc(var(--k) * 11px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 11px);
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-indent: 0.24em;
+  color: var(--traco);
+  background: var(--verde);
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+  box-shadow: 0 3px 0 var(--traco);
+  opacity: 0.82;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   LOBBY
+   --------------------------------------------------------------------------------------------- */
+
+#lobby {
+  display: none;
+  overflow: hidden;
+}
+
+#lobby.ativa {
+  display: block;
+}
+
+/* Camada de leitura por cima da arena desfocada: escurece o suficiente para o texto ler sem
+   apagar o movimento do fundo. */
+#lobby .lobby-fundo {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 66% 55%, rgba(11, 15, 26, 0), rgba(6, 9, 16, 0.6) 82%),
+    linear-gradient(100deg, rgba(6, 9, 16, 0.92) 0%, rgba(6, 9, 16, 0.55) 32%, rgba(6, 9, 16, 0.15) 60%, rgba(6, 9, 16, 0.55) 100%);
+}
+
+#lobby-entrada,
+#lobby-sala {
+  position: absolute;
+  inset: 0;
+  display: none;
+}
+
+#lobby.em-entrada #lobby-entrada {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(28px, 6vw, 86px);
+  padding: 0 6vw;
+}
+
+#lobby.em-sala #lobby-sala {
+  display: grid;
+  grid-template-columns: minmax(290px, 348px) minmax(380px, 1fr);
+  gap: clamp(20px, 3vw, 46px);
+  align-content: center;
+  align-items: start;
+  padding: clamp(16px, 3vh, 34px) clamp(24px, 4vw, 62px) 46px;
+}
+
+#lobby-sala .marca-sala {
+  font-family: var(--fd);
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: var(--creme);
+  text-shadow: var(--contorno-fino);
+  margin-bottom: 2px;
+}
+
+#lobby-sala .marca-sala span {
+  color: var(--amarelo);
+  margin-left: 8px;
+}
+
+/* ----- entrada ----- */
+#lobby-entrada .marca {
+  max-width: 540px;
+}
+
+#lobby-entrada .linha-topo {
+  display: inline-block;
+  padding: 5px 12px 6px;
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  text-indent: 0.26em;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+  box-shadow: 0 3px 0 var(--traco);
+  margin-bottom: 16px;
+}
+
+/* Título com contorno grosso: é a peça que dá o tom de desenho animado logo na primeira tela. */
+#lobby-entrada h1 {
+  margin: 0;
+  font-family: var(--fd);
+  font-size: clamp(48px, 7.4vw, 100px);
+  font-weight: 700;
+  line-height: 0.92;
+  letter-spacing: -0.01em;
+  color: var(--creme);
+  text-shadow: var(--contorno), 0 9px 0 var(--traco);
+}
+
+#lobby-entrada h1 span {
+  display: block;
+  color: var(--amarelo);
+  text-shadow: var(--contorno), 0 9px 0 var(--traco);
+}
+
+#lobby-entrada .regra {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 26px 0 0;
+  padding: 11px 16px;
+  max-width: 460px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--texto);
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 12px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+#lobby-entrada .regra .icone-3d {
+  width: 34px;
+  height: 34px;
+  flex: none;
+}
+
+#lobby-entrada .regra b {
+  color: var(--amarelo);
+}
+
+#lobby-entrada .cartao {
+  position: relative;
+  width: 356px;
+  flex: none;
+  padding: 24px 24px 20px;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 20px;
+  box-shadow: 0 8px 0 var(--traco);
+}
+
+#lobby-entrada .campo {
+  display: block;
+  margin-bottom: 14px;
+}
+
+#lobby-entrada .campo > span {
+  display: block;
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--amarelo);
+  margin-bottom: 6px;
+}
+
+#lobby-entrada input {
+  display: block;
+  width: 100%;
+  padding: 11px 13px;
+  color: var(--texto);
+  font-family: var(--fb);
+  font-weight: 600;
+  font-size: 15px;
+  background: var(--painel-3);
+  border: var(--b) solid var(--traco);
+  border-radius: 10px;
+  outline: none;
+  transition: background 140ms ease, box-shadow 140ms ease;
+}
+
+#lobby-entrada input::placeholder {
+  color: rgba(148, 164, 198, 0.65);
+  font-weight: 400;
+}
+
+#lobby-entrada input:focus {
+  background: #06090f;
+  box-shadow: inset 0 0 0 2px var(--amarelo);
+}
+
+#lobby-entrada input#campo-codigo {
+  font-family: var(--fd);
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  text-align: center;
+  text-transform: uppercase;
+  color: var(--amarelo);
+  padding: 8px 13px;
+}
+
+#lobby-entrada .ou {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  color: var(--texto-fraco);
+}
+
+#lobby-entrada .ou i {
+  flex: 1;
+  height: 3px;
+  background: var(--traco);
+  border-radius: 2px;
+}
+
+#lobby-aviso {
+  min-height: 18px;
+  margin-top: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ff9aa8;
+  text-align: center;
+}
+
+/* ----- treino contra bots (Fase 12 §7) -----
+   Terceira porta da tela de entrada, abaixo de uma linha separadora: quem só quer pegar o jeito
+   do ricochete não precisa de sala nem de código. É deliberadamente MAIS DISCRETA que as duas
+   ações principais — a graça do jogo é jogar com os colegas, o treino é o degrau antes disso. */
+#lobby-entrada .treino {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 3px dashed rgba(122, 140, 178, 0.35);
+}
+
+#lobby-entrada .botao-jogo.treino {
+  color: var(--texto);
+  background: var(--painel-3);
+  border-color: var(--traco);
+  font-size: 13px;
+  padding: 11px 12px;
+}
+
+#lobby-entrada .botao-jogo.treino:hover:not(:disabled),
+#lobby-entrada .botao-jogo.treino:focus-visible {
+  color: var(--traco);
+  background: var(--verde);
+}
+
+#lobby-entrada .treino .quantos {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#lobby-entrada .treino .quantos .lbl {
+  font-family: var(--fd);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--texto-fraco);
+}
+
+/* Três botões em vez de um `<select>` nativo: a caixa do sistema é a única peça da tela que não
+   fala a língua do jogo, e são só três opções — cabem todas à vista, sem abrir nada. */
+#lobby-entrada .treino .qtd {
+  flex: 1;
+  padding: 8px 0 9px;
+  font-family: var(--fd);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--texto);
+  background: var(--painel-3);
+  border: var(--b) solid var(--traco);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+#lobby-entrada .treino .qtd:hover:not(.ativo) {
+  background: #16203c;
+}
+
+#lobby-entrada .treino .qtd.ativo {
+  color: var(--traco);
+  background: var(--amarelo);
+}
+
+#lobby-entrada .treino .qtd:focus-visible {
+  outline: 3px solid var(--amarelo);
+  outline-offset: 2px;
+}
+
+
+#lobby-entrada .treino .dica {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--texto-fraco);
+}
+
+/* ----- sala: coluna da esquerda ----- */
+#lobby-sala .coluna-esq {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Código da sala: a peça mais visível da tela, porque é a que se dita em voz alta. Placa
+   amarela cheia com o código escuro por cima — mesmo vocabulário do relógio do HUD. */
+#lobby-sala .bloco-codigo {
+  position: relative;
+  padding: 8px 18px 14px;
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: 18px;
+  box-shadow: 0 7px 0 var(--traco);
+}
+
+#lobby-sala .lbl {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  color: rgba(10, 14, 24, 0.62);
+}
+
+#lobby-sala .codigo-sala {
+  font-family: var(--fd);
+  font-size: clamp(56px, 7vw, 80px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-indent: 0.1em;
+  color: var(--traco);
+}
+
+#lobby-sala .link-linha {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+#lobby-sala .link-linha span {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(10, 14, 24, 0.62);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#lobby-sala .link-linha button {
+  flex: none;
+  padding: 5px 11px 6px;
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--creme);
+  background: var(--traco);
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+#lobby-sala .link-linha button.ok {
+  color: var(--traco);
+  background: var(--verde);
+}
+
+#lobby-sala .bloco-qr {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 14px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+#lobby-sala .bloco-qr canvas {
+  width: 104px;
+  height: 104px;
+  flex: none;
+  display: block;
+  background: var(--creme);
+  padding: 5px;
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+}
+
+#lobby-sala .bloco-qr p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--texto-fraco);
+}
+
+/* ----- sala: SELETOR DE COR (Fase 10 §5) -----
+   Dez quadrados com a miniatura do tanque já pintada. Quem é meu ganha anel amarelo e uma
+   marca; quem é de outro fica esmaecido e hachurado, sem clique. A unicidade é decidida no
+   SERVIDOR (`TankRoom`, canal `pick_color`) — o que se vê aqui é a leitura do estado frio. */
+#lobby-sala .bloco-cores {
+  padding: 10px 12px 12px;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 14px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+#lobby-sala .bloco-cores .cabeca {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+#lobby-sala .bloco-cores .lbl {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  color: var(--amarelo);
+}
+
+#lobby-aviso-cor {
+  font-size: 11px;
+  font-weight: 600;
+  color: transparent;
+  transition: color 200ms ease;
+}
+
+#lobby-aviso-cor.ativo {
+  color: #ff9aa8;
+}
+
+#lobby-cores {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+}
+
+/* Livre = a cor CHEIA, para o quadrado parecer a tinta que se está escolhendo. Dentro dela o
+   EMBLEMA DO ANIMAL (Fase 11) e o nome do bicho: escolher a cor é escolher o bicho, o par é fixo.
+   O que muda de estado é a ocupada (esmaecida e hachurada) e a minha (anel amarelo e visto). */
+#lobby-cores .cor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 2px 3px;
+  background: var(--cor);
+  border: var(--b) solid var(--traco);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: transform 110ms ease, filter 140ms ease;
+}
+
+#lobby-cores .cor .bicho.grande {
+  width: 30px;
+  height: 30px;
+  padding: 1px;
+  border-width: 2px;
+}
+
+#lobby-cores .cor .apelido {
+  font-family: var(--fd);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  color: rgba(10, 14, 24, 0.78);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+#lobby-cores .cor:hover:not(:disabled) {
+  transform: translateY(-3px);
+  filter: brightness(1.12);
+}
+
+/* A minha: anel amarelo e um visto no canto. */
+#lobby-cores .cor.minha {
+  cursor: default;
+  box-shadow: 0 0 0 3px var(--amarelo);
+}
+
+#lobby-cores .cor.minha::after {
+  content: '✓';
+  position: absolute;
+  right: -5px;
+  top: -7px;
+  width: 18px;
+  height: 18px;
+  font: 700 12px/16px var(--fd);
+  text-align: center;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: 2px solid var(--traco);
+  border-radius: 50%;
+}
+
+/* Tomada por outro: hachura por cima e nada de clique. */
+#lobby-cores .cor.ocupada {
+  cursor: not-allowed;
+  opacity: 0.34;
+  filter: saturate(0.5);
+}
+
+#lobby-cores .cor.ocupada::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(10, 14, 24, 0.9) 0 3px,
+    rgba(10, 14, 24, 0) 3px 7px
+  );
+}
+
+#lobby-sala .bloco-regra {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 14px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+#lobby-sala .bloco-regra .icone-3d {
+  width: 32px;
+  height: 32px;
+  flex: none;
+}
+
+#lobby-sala .bloco-regra p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--texto);
+}
+
+#lobby-sala .bloco-regra b {
+  color: var(--amarelo);
+}
+
+#lobby-sala .bloco-teclas {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 4px 4px 0;
+}
+
+#lobby-sala .wasd {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+#lobby-sala .wasd div {
+  display: flex;
+  gap: 4px;
+}
+
+#lobby-sala .legenda {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--texto-fraco);
+}
+
+#lobby-sala .legenda span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ----- sala: grade de vagas ----- */
+#lobby-sala .cabeca-vagas {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+#lobby-sala .cabeca-vagas .titulo {
+  font-family: var(--fd);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--creme);
+  text-shadow: var(--contorno-fino);
+}
+
+#lobby-sala .cabeca-vagas .contador {
+  font-family: var(--fd);
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: 2px solid var(--traco);
+  border-radius: 9px;
+  padding: 2px 12px 4px;
+  box-shadow: 0 3px 0 var(--traco);
+}
+
+/* Duas colunas de cartão largo em vez de quatro estreitas: nome de 14 caracteres tem que caber
+   inteiro — vaga com nome cortado ("Ana ...") é o oposto de "essa sala é sua". */
+#lobby-vagas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+@media (min-width: 1400px) {
+  #lobby-vagas {
+    grid-template-columns: repeat(3, minmax(210px, 1fr));
+  }
+}
+
+/* Vaga ocupada: o cartão inteiro é CHAPADO NA COR do jogador, com o nome escrito por cima em
+   escuro. É o mesmo princípio do placar — a cor de cada um é uma mancha, não uma listra fina. */
+#lobby-vagas .vaga {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  background: var(--cor, #222d52);
+  border: var(--b) solid var(--traco);
+  border-radius: 12px;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+/* Retrato = miniatura do tanque com o emblema do animal ENCAIXADO no canto. Um elemento só, para
+   o cartão de 220 px não virar uma fila de brasões. */
+#lobby-vagas .vaga .retrato {
+  position: relative;
+  flex: none;
+  display: block;
+  line-height: 0;
+}
+
+#lobby-vagas .vaga canvas {
+  display: block;
+  border-radius: 8px;
+  background: rgba(10, 14, 24, 0.28);
+}
+
+#lobby-vagas .vaga .bicho.selo {
+  position: absolute;
+  right: -6px;
+  bottom: -5px;
+  width: 24px;
+  height: 24px;
+  padding: 1px;
+  border-width: 2px;
+}
+
+#lobby-vagas .vaga .nome {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--traco);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nome do bicho embaixo do nome do jogador — o vínculo entre a pessoa e o emblema é dito uma vez
+   aqui, no lobby, e depois só o emblema precisa aparecer. */
+#lobby-vagas .vaga .nome .bicho-nome {
+  display: block;
+  font-family: var(--fd);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(10, 14, 24, 0.62);
+}
+
+#lobby-vagas .vaga .nome i {
+  font-style: normal;
+  font-size: 10px;
+  font-family: var(--fd);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: rgba(10, 14, 24, 0.62);
+}
+
+#lobby-vagas .vaga .estado {
+  flex: none;
+  align-self: flex-start;
+  font-family: var(--fd);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 3px 7px 4px;
+  color: rgba(10, 14, 24, 0.65);
+  background: rgba(10, 14, 24, 0.16);
+  border-radius: 6px;
+}
+
+#lobby-vagas .vaga.pronto .estado {
+  color: var(--traco);
+  background: var(--creme);
+}
+
+#lobby-vagas .vaga.eu {
+  box-shadow: 0 5px 0 var(--traco), 0 0 0 3px var(--amarelo);
+}
+
+#lobby-vagas .vaga.vazia {
+  background: #161e38;
+  box-shadow: 0 5px 0 var(--traco);
+}
+
+#lobby-vagas .vaga.vazia .nome {
+  color: rgba(148, 164, 198, 0.7);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* Silhueta do tanque ausente: mesma pegada da miniatura, só que vazia. */
+#lobby-vagas .vaga.vazia .silhueta {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  background: repeating-linear-gradient(
+    -45deg,
+    rgba(148, 164, 198, 0.14) 0 4px,
+    rgba(148, 164, 198, 0) 4px 9px
+  );
+  border-radius: 8px;
+}
+
+#lobby-sala .rodape-sala {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+#lobby-sala .rodape-sala .botao-jogo {
+  width: auto;
+  min-width: 280px;
+}
+
+#lobby-status {
+  font-family: var(--fd);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--texto-fraco);
+}
+
+#lobby-status.contando {
+  font-size: 26px;
+  color: var(--amarelo);
+  text-shadow: var(--contorno-fino);
+}
+
+/* ---------------------------------------------------------------------------------------------
+   FIM DE RODADA
+   --------------------------------------------------------------------------------------------- */
+
+#roundend {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 45%, rgba(7, 10, 18, 0.6), rgba(7, 10, 18, 0.88));
+}
+
+#roundend.ativa {
+  display: flex;
+}
+
+.painel-rodada {
+  /* Altura da linha do ranking: é a unidade do deslize de posição (ui/roundend.ts multiplica
+     `--n` por ela para a linha nascer no lugar antigo e subir/descer até o novo). */
+  --linha-h: 34px;
+  width: min(640px, 88vw);
+  padding: 18px 20px 16px;
+  background: var(--painel);
+  border: 4px solid var(--traco);
+  border-radius: 22px;
+  box-shadow: 0 10px 0 var(--traco);
+  animation: painel-entra 260ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+}
+
+@keyframes painel-entra {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.painel-rodada .cabeca {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 3px solid var(--traco);
+}
+
+.painel-rodada .selo {
+  width: 58px;
+  height: 58px;
+  flex: none;
+}
+
+/* O código da sala sai de cena durante a ação e reaparece AQUI — é justamente o intervalo em que
+   alguém atrasado consegue entrar sem atrapalhar ninguém. */
+.painel-rodada .sala {
+  flex: none;
+  text-align: center;
+  padding: 3px 12px 5px;
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: 11px;
+  box-shadow: 0 4px 0 var(--traco);
+}
+
+.painel-rodada .sala .lbl {
+  display: block;
+  font-family: var(--fd);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  color: rgba(10, 14, 24, 0.6);
+}
+
+.painel-rodada .sala .codigo {
+  font-family: var(--fd);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  line-height: 1.05;
+  color: var(--traco);
+}
+
+/* Zoeira da rodada: as frases longas que saíram do killfeed (Fase 8 §3) aparecem aqui, onde
+   todo mundo está parado lendo em vez de desviando de bala. */
+.painel-rodada .destaques {
+  margin: 0 0 12px;
+}
+
+.painel-rodada .destaques .destaque {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--texto);
+  padding: 7px 11px;
+  background: var(--painel-2);
+  border: 2px solid var(--traco);
+  border-radius: 10px;
+  animation: destaque-entra 420ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+  animation-delay: var(--atraso, 0ms);
+}
+
+.painel-rodada .destaques .destaque b {
+  text-shadow: var(--contorno-fino);
+}
+
+.painel-rodada .destaques .destaque + .destaque {
+  margin-top: 5px;
+}
+
+@keyframes destaque-entra {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.painel-rodada .textos {
+  flex: 1;
+  min-width: 0;
+}
+
+.painel-rodada .titulo {
+  font-family: var(--fd);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  color: var(--texto-fraco);
+  text-transform: uppercase;
+}
+
+.painel-rodada .titulo b {
+  color: var(--creme);
+  text-shadow: var(--contorno-fino);
+}
+
+.painel-rodada .sub {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--amarelo);
+  margin-top: 4px;
+}
+
+/* Linha do placar CHAPADA NA COR DO JOGADOR, com nome e pontos escritos em escuro por cima.
+   Era a listra de 4 px da Fase 6 — agora a cor de cada um é uma faixa inteira, que é o pedido
+   do usuário ("placar com cor viva, a faixa de cada jogador na cor dele, saturada"). */
+.painel-rodada .linha {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: var(--linha-h);
+  margin-bottom: 4px;
+  padding: 0 8px 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--traco);
+  background: var(--cor);
+  border: 2px solid var(--traco);
+  border-radius: 9px;
+  animation: linha-entra 300ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+  animation-delay: var(--atraso, 0ms);
+}
+
+/* A faixa lateral virou um degrau escuro dentro da própria linha: separa a posição do nome sem
+   introduzir uma segunda cor. */
+.painel-rodada .faixa {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 30px;
+  background: rgba(10, 14, 24, 0.2);
+  border-radius: 7px 0 0 7px;
+}
+
+.painel-rodada .pos {
+  position: relative;
+  font-family: var(--fd);
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 20px;
+  text-align: center;
+}
+
+.painel-rodada .nome {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* O primeiro colocado ganha destaque FORTE, não sutil: anel amarelo, linha mais alta e coroa. */
+.painel-rodada .linha:first-child {
+  height: calc(var(--linha-h) + 8px);
+  font-size: 16px;
+  box-shadow: 0 0 0 3px var(--amarelo);
+}
+
+.painel-rodada .linha:first-child .nome::after {
+  content: ' ★';
+  color: rgba(10, 14, 24, 0.55);
+}
+
+@keyframes linha-entra {
+  from {
+    opacity: 0;
+    transform: translateX(-14px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Quem MUDOU de posição não entra escalonado com o resto: a linha nasce onde ela estava no
+   ranking da rodada anterior (`--n` alturas de linha acima/abaixo) e desliza até o lugar novo.
+   Só `transform` — nada de `top`, nada de reflow. */
+/* O deslize e as setas esperam a classe .revelado (posta pelo JS depois de ~0,9 s). Antes disso o
+   painel mostra o placar como estava ANTES da rodada, para o jogador ver a mudança acontecer. */
+.painel-rodada .linha.mexeu { transform: translateY(calc(var(--n, 0) * (var(--linha-h) + 4px))); opacity: 0.55; }
+.painel-rodada .revelado .linha.mexeu {
+  animation: linha-desliza 620ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+  transform: none;
+  opacity: 1;
+}
+
+@keyframes linha-desliza {
+  from {
+    opacity: 0.3;
+    transform: translateY(calc(var(--n, 0) * (var(--linha-h) + 4px)));
+  }
+  55% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.painel-rodada .linha.eu {
+  box-shadow: 0 0 0 3px var(--creme);
+}
+
+.painel-rodada .linha.eu:first-child {
+  box-shadow: 0 0 0 3px var(--amarelo), 0 0 0 6px var(--creme);
+}
+
+.painel-rodada .tag-vivo {
+  font-family: var(--fd);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 3px 7px 4px;
+  color: var(--creme);
+  background: var(--traco);
+  border-radius: 6px;
+}
+
+.painel-rodada .mov {
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  min-width: 26px;
+  text-align: right;
+  color: transparent;
+}
+
+/* Seta de variação: entra, fica legível ~2 s e some sozinha — passado esse tempo ela já contou
+   a história e vira ruído no placar. */
+.painel-rodada .mov.sobe,
+.painel-rodada .mov.desce { opacity: 0; }
+.painel-rodada .revelado .mov.sobe,
+.painel-rodada .revelado .mov.desce {
+  animation: mov-some 2.6s ease both;
+  animation-delay: 260ms;
+}
+
+.painel-rodada .mov.sobe {
+  color: #0d4b12;
+}
+
+.painel-rodada .mov.desce {
+  color: #6d0d1c;
+}
+
+@keyframes mov-some {
+  0% {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  12% {
+    opacity: 1;
+    transform: none;
+  }
+  80% {
+    opacity: 1;
+    transform: none;
+  }
+  100% {
+    opacity: 0;
+    transform: none;
+  }
+}
+
+.painel-rodada .ganho {
+  font-family: var(--fd);
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+  color: rgba(10, 14, 24, 0.55);
+}
+
+.painel-rodada .ganho.bom {
+  color: var(--traco);
+}
+
+.painel-rodada .ganho.ruim {
+  color: #7d1020;
+}
+
+/* O total é a única coisa da linha com fundo próprio: pastilha escura, número creme. Fica
+   legível por cima de qualquer uma das 10 cores. */
+.painel-rodada .total {
+  font-family: var(--fd);
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 42px;
+  padding: 1px 8px 2px;
+  text-align: right;
+  color: var(--creme);
+  background: var(--traco);
+  border-radius: 7px;
+  transform-origin: right center;
+}
+
+/* Pulso enquanto o número CONTA do total antigo até o novo (ui/roundend.ts anima o texto). */
+.painel-rodada .total.pulsa {
+  animation: pulso-pontos 640ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  animation-delay: 240ms;
+}
+
+@keyframes pulso-pontos {
+  0% {
+    transform: scale(1);
+  }
+  32% {
+    transform: scale(1.28);
+    color: var(--amarelo);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* ---------------------------------------------------------------------------------------------
+   CONTAGEM REGRESSIVA (overlay sobre a arena)
+   --------------------------------------------------------------------------------------------- */
+
+#contagem {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  user-select: none;
+  z-index: 30;
+  /* Escurece a arena para o número ler sobre qualquer parte do labirinto — o piso do jogo é
+     claro, e branco sobre claro não tem contraste nenhum. O gradiente concentra o escuro no
+     miolo, então as bordas da arena e o HUD continuam legíveis atrás.
+     Fase 11: o miolo caiu de 0,82 para 0,58. A contagem virou também o momento de cada um achar
+     o próprio tanque, e a 0,82 o anel, a seta e o holofote que marcam o tanque de quem está
+     jogando ficavam a 18% da intensidade — praticamente apagados. O número continua legível
+     porque o contraste dele vem do contorno escuro de 7 px, não deste véu. */
+  background: radial-gradient(circle at 50% 47%, rgba(7, 10, 18, 0.58), rgba(7, 10, 18, 0.3) 62%);
+}
+
+#contagem.ativa {
+  display: flex;
+}
+
+#contagem .numero-slot {
+  text-align: center;
+}
+
+/* Fase 11: o bloco do NÚMERO sobe uma fração da tela enquanto a contagem conta. A partir daqui a
+   contagem divide o palco com a aproximação de câmera que mostra a cada um o próprio tanque, e os
+   dois miravam o mesmo pixel central. Com o número em cima, a metade de baixo fica livre — é lá
+   que a câmera pousa o tanque de quem está jogando. O "VAI!" NÃO sobe (ele não é filho de
+   `.disco`): quando ele entra a câmera já voltou e não há mais nada para mostrar embaixo. */
+#contagem .disco,
+#contagem .prepare {
+  transform: translateY(-10vh);
+}
+
+#contagem .disco {
+  position: relative;
+  width: 240px;
+  height: 240px;
+  display: grid;
+  place-items: center;
+}
+
+/* Anel que fecha em 1 s — o mesmo segundo do número que está na tela. */
+#contagem .anel {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+#contagem .anel .trilho {
+  fill: none;
+  stroke: var(--traco);
+  stroke-width: 8;
+}
+
+#contagem .anel .progresso {
+  fill: none;
+  stroke: var(--amarelo);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-dasharray: 339.29; /* 2πr, r = 54 */
+  animation: anel-fecha 1s linear both;
+}
+
+@keyframes anel-fecha {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: 339.29;
+  }
+}
+
+/* Fase 11: enquanto a contagem CONTA, o número deixa passar a arena atrás dele. A câmera agora
+   aproxima do tanque de quem está jogando, e o tanque acaba justamente no meio da tela — se o
+   glifo fosse opaco ele taparia exatamente a coisa que a contagem passou a existir para mostrar.
+   A 66% e com o contorno escuro de 7 px o número continua o elemento mais legível da tela; o
+   "VAI!" (`.numero.vai`, fora do `.disco`) segue cheio, porque aí o tanque já não importa. */
+#contagem .disco .numero {
+  opacity: 0.66;
+}
+
+#contagem .numero {
+  position: relative;
+  font-family: var(--fd);
+  font-weight: 700;
+  font-size: 156px;
+  line-height: 1;
+  color: var(--creme);
+  /* Contorno grosso + sombra dura: o mesmo tratamento dos números do HUD, no tamanho grande. */
+  text-shadow:
+    -5px -5px 0 var(--traco), 5px -5px 0 var(--traco), -5px 5px 0 var(--traco), 5px 5px 0 var(--traco),
+    -7px 0 0 var(--traco), 7px 0 0 var(--traco), 0 -7px 0 var(--traco), 0 7px 0 var(--traco),
+    0 14px 0 var(--traco);
+  animation: contagem-bate 0.5s cubic-bezier(0.14, 0.9, 0.3, 1) both;
+}
+
+#contagem .numero.vai {
+  font-size: 138px;
+  letter-spacing: 0.1em;
+  text-indent: 0.1em;
+  color: var(--amarelo);
+  animation: contagem-vai 0.9s cubic-bezier(0.16, 0.86, 0.32, 1) both, tremor-vai 0.34s steps(2) 3;
+}
+
+/* Fantasma vermelho deslocado atrás do "VAI!": o mesmo texto, meio pixel fora do lugar. É o
+   tremor de largada, não um efeito de glitch decorativo. */
+#contagem .numero.vai::before {
+  content: attr(data-texto);
+  position: absolute;
+  inset: 0;
+  color: var(--vermelho);
+  text-shadow: none;
+  transform: translate(7px, -4px);
+  z-index: -1;
+}
+
+#contagem .risco {
+  width: 420px;
+  height: 8px;
+  margin: 18px auto 0;
+  background: var(--amarelo);
+  border: 3px solid var(--traco);
+  border-radius: 5px;
+  animation: risco-abre 0.5s cubic-bezier(0.16, 0.86, 0.3, 1) both;
+}
+
+@keyframes risco-abre {
+  from {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+#contagem .prepare {
+  display: inline-block;
+  margin-top: 18px;
+  padding: 4px 16px 6px;
+  font-family: var(--fd);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.4em;
+  text-indent: 0.4em;
+  color: var(--traco);
+  background: var(--creme);
+  border: 3px solid var(--traco);
+  border-radius: 10px;
+  box-shadow: 0 4px 0 var(--traco);
+}
+
+/* Pulso de entrada e PARA. O número precisa ficar legível durante o segundo inteiro dele — uma
+   animação que some no fim deixaria metade da contagem sem nada na tela. */
+@keyframes contagem-bate {
+  0% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+  38% {
+    transform: scale(0.95);
+    opacity: 1;
+  }
+  62% {
+    transform: scale(1.04);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes contagem-vai {
+  0% {
+    transform: scale(0.45);
+    opacity: 0;
+  }
+  18% {
+    transform: scale(1.14);
+    opacity: 1;
+  }
+  34% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  74% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+
+@keyframes tremor-vai {
+  0% {
+    margin-left: -5px;
+  }
+  100% {
+    margin-left: 5px;
+  }
+}
+
+/* ---------------------------------------------------------------------------------------------
+   RESULTADO FINAL
+   --------------------------------------------------------------------------------------------- */
+
+#result {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at 50% 36%, rgba(11, 15, 26, 0.6), rgba(6, 9, 16, 0.93));
+}
+
+#result.ativa {
+  display: flex;
+}
+
+.painel-final {
+  /* Medidas do padding em variável: o rodapé fixo (`.acoes-final`) precisa sangrar exatamente o
+     mesmo tanto para a faixa opaca dele cobrir a largura inteira do painel. */
+  --pad-final-x: 28px;
+  --pad-final: 18px;
+  width: min(640px, 92vw);
+  max-height: 96vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--traco) transparent;
+  padding: 14px var(--pad-final-x) var(--pad-final);
+  text-align: center;
+  background: var(--painel);
+  border: 4px solid var(--traco);
+  border-radius: 24px;
+  box-shadow: 0 10px 0 var(--traco);
+}
+
+.painel-final .rotulo {
+  display: inline-block;
+  padding: 3px 14px 5px;
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3em;
+  text-indent: 0.3em;
+  color: var(--traco);
+  background: var(--creme);
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+}
+
+#vencedor .trofeu {
+  width: 88px;
+  height: 88px;
+  margin: 6px auto 0;
+  animation: trofeu-entra 620ms cubic-bezier(0.16, 0.9, 0.3, 1) both;
+}
+
+@keyframes trofeu-entra {
+  0% {
+    opacity: 0;
+    transform: translateY(-26px) scale(0.7) rotate(-12deg);
+  }
+  60% {
+    transform: translateY(0) scale(1.08) rotate(3deg);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+#vencedor .faixa {
+  display: inline-block;
+  padding: 4px 18px 6px;
+  font-family: var(--fd);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.34em;
+  text-indent: 0.34em;
+  color: var(--traco);
+  background: var(--amarelo);
+  border: var(--b) solid var(--traco);
+  border-radius: 10px;
+  box-shadow: 0 4px 0 var(--traco);
+}
+
+#vencedor .nome {
+  font-family: var(--fd);
+  font-size: clamp(46px, 6.6vw, 70px);
+  font-weight: 700;
+  line-height: 1;
+  margin: 8px 0 4px;
+  color: var(--cor);
+  text-shadow: var(--contorno), 0 8px 0 var(--traco);
+}
+
+#vencedor .pontos {
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  color: var(--texto-fraco);
+}
+
+#vencedor .pontos b {
+  color: var(--amarelo);
+  font-size: 17px;
+}
+
+#podio {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 16px 0 12px;
+}
+
+/* Pódio chapado na cor de cada um — três blocos de cor, não três painéis translúcidos. */
+#podio .lugar {
+  position: relative;
+  width: 132px;
+  font-family: var(--fd);
+  color: var(--traco);
+  background: var(--cor);
+  border: var(--b) solid var(--traco);
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 5px 0 var(--traco);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px 8px 6px;
+}
+
+#podio .lugar .cabeca .pos {
+  display: block;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+#podio .lugar .cabeca .nome {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#podio .lugar .base .pts {
+  display: inline-block;
+  padding: 1px 9px 2px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--creme);
+  background: var(--traco);
+  border-radius: 6px;
+}
+
+/* As três alturas subiram 14 px na Fase 11 para caber o EMBLEMA DO ANIMAL entre a colocação e o
+   nome. Sem isso a pastilha de pontos do 2º e do 3º escorregava para fora da base do degrau. */
+#podio .p1 {
+  order: 2;
+  height: 136px;
+  width: 152px;
+  box-shadow: 0 5px 0 var(--traco), 0 0 0 3px var(--amarelo);
+}
+
+#podio .p2 {
+  order: 1;
+  height: 116px;
+}
+
+#podio .p3 {
+  order: 3;
+  height: 102px;
+}
+
+#podio .lugar .cabeca .bicho {
+  margin: 2px auto 0;
+  display: block;
+  vertical-align: baseline;
+}
+
+#resultado-ranking {
+  text-align: left;
+  margin: 14px 0;
+}
+
+/* Mesmo tratamento do fim de rodada: a linha inteira na cor do jogador. */
+#resultado-ranking .linha {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 28px;
+  margin-bottom: 4px;
+  padding: 0 8px 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--traco);
+  background: var(--cor);
+  border: 2px solid var(--traco);
+  border-radius: 8px;
+}
+
+#resultado-ranking .faixa {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 28px;
+  background: rgba(10, 14, 24, 0.2);
+  border-radius: 6px 0 0 6px;
+}
+
+#resultado-ranking .linha.eu {
+  box-shadow: 0 0 0 3px var(--creme);
+}
+
+#resultado-ranking .linha .pos {
+  position: relative;
+  font-family: var(--fd);
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+}
+
+#resultado-ranking .linha .nome {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#resultado-ranking .linha .pts {
+  font-family: var(--fd);
+  font-weight: 700;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 9px 2px;
+  color: var(--creme);
+  background: var(--traco);
+  border-radius: 6px;
+}
+
+#resultado-titulos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 12px 0 14px;
+}
+
+#resultado-titulos .titulo {
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 5px 12px 6px;
+  color: var(--traco);
+  background: var(--creme);
+  border: 2px solid var(--traco);
+  border-radius: 9px;
+  box-shadow: 0 3px 0 var(--traco);
+}
+
+#resultado-titulos .titulo b {
+  color: #7d3c00;
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.painel-final .botao-jogo {
+  width: auto;
+  min-width: 240px;
+  margin: 0 auto;
+  padding: 14px 22px;
+  font-size: 17px;
+}
+
+/* Fase 12 §3: as ações do fim de partida GRUDAM no rodapé do painel.
+   O painel tem `max-height: 96vh` com rolagem interna, e em 720p o conteúdo (troféu + pódio +
+   ranking de 10 + títulos + melhores momentos) passa disso — o botão JOGAR DE NOVO caía abaixo da
+   dobra e só a borda de cima dele aparecia. Quem clicava ali achava que o botão estava quebrado.
+   Com `position: sticky` ele fica na tela role o painel ou não, sobre uma faixa opaca para não
+   ler por cima do ranking que passa embaixo. */
+.painel-final .acoes-final {
+  position: sticky;
+  bottom: calc(-1 * var(--pad-final));
+  margin: 10px calc(-1 * var(--pad-final-x)) 0;
+  padding: 12px var(--pad-final-x) var(--pad-final);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  /* Faixa OPACA, não um véu: o ranking passa por baixo dela quando o painel rola, e com fundo
+     translúcido a última linha ficava meio visível atrás do botão — parecia defeito, não camada.
+     A sombra para cima é o que diz "tem conteúdo passando aqui embaixo". */
+  background: var(--painel);
+  box-shadow: 0 -14px 16px -10px rgba(6, 9, 16, 0.9);
+}
+
+.painel-final .acoes-final button[hidden] {
+  display: none;
+}
+
+#resultado-proxima {
+  font-family: var(--fd);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--texto-fraco);
+  min-height: 16px;
+  margin-top: 2px;
+}
+
+/* Melhores momentos da partida — as frases de zoeira que saíram do killfeed (Fase 8 §3). */
+#resultado-destaques {
+  margin: 4px 0 14px;
+  text-align: left;
+}
+
+#resultado-destaques .rotulo-destaques {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  text-indent: 0.26em;
+  color: var(--amarelo);
+  margin-bottom: 7px;
+  text-align: center;
+}
+
+#resultado-destaques .destaque {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--texto);
+  padding: 7px 11px;
+  background: var(--painel-2);
+  border: 2px solid var(--traco);
+  border-radius: 10px;
+  animation: destaque-entra 420ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+  animation-delay: var(--atraso, 0ms);
+}
+
+#resultado-destaques .destaque b {
+  text-shadow: var(--contorno-fino);
+}
+
+#resultado-destaques .destaque + .destaque {
+  margin-top: 5px;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   TELAS ESTREITAS / BAIXAS
+   --------------------------------------------------------------------------------------------- */
+
+/* Notebook 1366×768 e 1280×720 continuam em duas colunas; abaixo de 900 px de largura não cabe
+   mais e a sala vira coluna única com rolagem. */
+@media (max-width: 900px) {
+  #lobby.em-sala #lobby-sala {
+    grid-template-columns: 1fr;
+    align-content: start;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--traco) transparent;
+  }
+
+  #lobby-sala .bloco-qr {
+    display: none;
+  }
+}
+
+/* Tela baixa (720p com barra de favoritos, notebook 1366×640…): o código da sala e o QR encolhem
+   para o botão PRONTO continuar visível sem rolagem. */
+@media (max-height: 700px) {
+  #lobby.em-sala #lobby-sala {
+    padding-top: 14px;
+    padding-bottom: 34px;
+    gap: 18px;
+  }
+
+  #lobby-sala .coluna-esq {
+    gap: 9px;
+  }
+
+  #lobby-sala .codigo-sala {
+    font-size: clamp(42px, 5vw, 58px);
+  }
+
+  #lobby-sala .bloco-qr canvas {
+    width: 84px;
+    height: 84px;
+  }
+
+  #lobby-sala .bloco-teclas {
+    padding: 0 4px;
+  }
+
+  #lobby-vagas {
+    gap: 7px;
+  }
+
+  #lobby-vagas .vaga {
+    padding: 5px 8px;
+  }
+
+  #lobby-sala .rodape-sala {
+    margin-top: 12px;
+  }
+}
+
+@media (max-height: 620px) {
+  #hud-relogio .timer {
+    font-size: 38px;
+  }
+
+  #contagem .numero {
+    font-size: 116px;
+  }
+
+  #contagem .disco {
+    width: 190px;
+    height: 190px;
+  }
+}
+
+/* Rolagem discreta no painel final — a barra padrão do Chromium é branca e larga, e corta o
+   painel ao meio quando o ranking é grande. */
+.painel-final::-webkit-scrollbar {
+  width: 7px;
+}
+
+.painel-final::-webkit-scrollbar-thumb {
+  background: var(--traco);
+  border-radius: 4px;
+}
+
+.painel-final::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+
+/* Seletor de quantidade de bots: três fichas no lugar do <select> do navegador, que destoava de
+   tudo (fonte do sistema, seta nativa) e ainda espremia o botão em duas linhas. */
+#lobby-entrada .treino .quantos {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: center;
+}
+#lobby-entrada .treino .quantos .lbl {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--texto-fraco);
+  margin-right: 4px;
+}
+#lobby-entrada .treino .quantos .qtd {
+  min-width: 40px;
+  padding: 7px 0;
+  font-family: var(--fd);
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--texto);
+  background: var(--painel-3);
+  border: 2px solid var(--traco);
+  border-radius: 9px;
+  box-shadow: 0 3px 0 var(--traco);
+  cursor: pointer;
+  transition: transform 0.08s, background 0.12s, color 0.12s;
+}
+#lobby-entrada .treino .quantos .qtd:hover {
+  background: var(--painel-2);
+}
+#lobby-entrada .treino .quantos .qtd.ativo {
+  color: var(--traco);
+  background: var(--amarelo);
+  transform: translateY(1px);
+  box-shadow: 0 2px 0 var(--traco);
+}
+
+/* Arte do tanque na tela de entrada — key art gerada, no mesmo vocabulário do jogo
+   (contorno preto grosso, cor chapada). Fica atrás do bloco de texto, sem roubar leitura. */
+#lobby-entrada .arte-tank {
+  display: block;
+  width: min(30vw, 330px);
+  margin: 0 0 -22px 4px;   /* o título encaixa por baixo: vira um bloco só, não duas peças */
+  filter: drop-shadow(0 10px 0 rgba(0, 0, 0, 0.45));
+  pointer-events: none;
+  user-select: none;
+}
+@media (max-height: 780px) {
+  #lobby-entrada .arte-tank { width: min(21vw, 220px); margin-bottom: -16px; }
+}

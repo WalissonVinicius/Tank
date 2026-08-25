@@ -1,0 +1,46 @@
+# Dependências e artefatos de build
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Dados de runtime (SQLite do ranking) e segredos
+data/
+*.db
+*.db-journal
+*.sqlite
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Arquivos de trabalho gerados durante o desenvolvimento assistido:
+# screenshots de verificação, medições, scripts descartáveis e specs de tarefa.
+# Nada disso é o jogo — é o rastro de como ele foi construído.
+# Tudo que começa com _ é rastro de construção (screenshots de verificação, medições,
+# scripts descartáveis e os briefings de cada fase). Para versionar os briefings, remova
+# a linha `_specs/` abaixo.
+_*
+_specs/
+*.png.bak
+
+# Screenshots de verificação espalhados pelo repo
+apps/client/*.png
+apps/client/render-demo.html
+
+# Playwright / ferramentas de teste
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
