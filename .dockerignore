@@ -5,7 +5,8 @@ dist
 .git
 data
 _specs
-*.png
+_*.png
+**/_*.png
 *.md
 .env
 .env.*

@@ -23,17 +23,10 @@ COPY apps ./apps
 
 RUN pnpm install --frozen-lockfile
 RUN pnpm build
-# Remove as devDependencies (typescript, vite, tsup, tsx, vitest...) do node_modules antes de
-# copiar para o stage final — mantém a imagem de produção enxuta.
-#
-# `CI=true` NÃO é opcional: para podar, o pnpm precisa apagar o node_modules e pede
-# confirmação interativa antes. Sem TTY (caso do Docker) ele aborta com
-# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY e derruba o build na última linha do estágio,
-# depois de já ter instalado tudo e compilado o better-sqlite3.
-#
-# `pnpm config set confirm-modules-purge false` NÃO resolve — testado, o pnpm 10 ignora.
-# A própria mensagem de erro aponta a saída: definir CI=true.
-RUN CI=true pnpm prune --prod
+# NAO usar `pnpm prune --prod` aqui. Ele e so otimizacao de tamanho, e a imagem so
+# chegou a rodar com a arvore podada -- o container crashava em loop (restart_count 10,
+# last_restart_type "crash") enquanto o mesmo bundle sobe sem erro fora do container.
+# Carregar node_modules inteiro custa alguns MB e elimina a variavel.
 
 # ---------- Stage 2: runtime ----------
 FROM node:24-slim AS runtime
