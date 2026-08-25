@@ -50,6 +50,7 @@ import {
   setLobbyBotHandler,
   setLobbyCorHandler,
   setLobbyDigitouHandler,
+  focarCampoNome,
   setLobbyEntradaHandler,
   setLobbyReadyHandler,
   setLobbySalaHandler,
@@ -767,6 +768,13 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       return '';
     }
   })();
+  // Chegou por link de sala (`?sala=ABCD`) e ainda não tem nome: o código já está preenchido e
+  // ENTRAR fica a um clique, então o campo vazio é o único passo que falta — leva o foco até ele
+  // em vez de esperar a pessoa descobrir sozinha. Quem já jogou tem o nome no localStorage e não
+  // é interrompido. O foco só pode ir DEPOIS da primeira renderização (antes dela a tela de
+  // entrada ainda não existe no DOM e o pedido seria descartado em silêncio).
+  let focoInicialPendente = Boolean(codigoDigitado) && !nome;
+
   let conectando = false;
   let conectado = false;
   // Menu de pausa e saída da sala (Fase 13 §1).
@@ -1152,6 +1160,17 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   }
 
   setLobbyEntradaHandler((acao, nomeInformado, codigo) => {
+    // O nome é OBRIGATÓRIO nas duas ações. Sem ele o servidor batizava a pessoa de "Jogador N" e
+    // ninguém se achava na arena nem no placar — o oposto do que o jogo é. Vale principalmente
+    // para quem chega por link de sala: o código já vem preenchido, então ENTRAR fica a um clique
+    // e o campo vazio passa batido. Por isso não basta avisar: o foco vai para o campo.
+    if (!nomeInformado.trim()) {
+      avisoEntrada = acao === 'entrar'
+        ? 'Escolha um nome antes de entrar — é assim que o pessoal vai te achar na arena.'
+        : 'Escolha um nome antes de criar a sala.';
+      focarCampoNome();
+      return;
+    }
     if (acao === 'entrar' && !isRoomCode(codigo)) {
       // O botão não fica mais desabilitado (Fase 12 §4): clicar com o código incompleto tem que
       // DIZER o que falta, não ficar mudo.
@@ -1168,7 +1187,12 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   // faltava era chegar nele sem montar URL na mão. Guarda nome e cor antes de recarregar, para o
   // treino começar com a mesma identidade que a pessoa acabou de escolher.
   setLobbyTreinoHandler((nomeInformado, bots) => {
-    const escolhido = nomeInformado || nome;
+    const escolhido = (nomeInformado || nome).trim();
+    if (!escolhido) {
+      avisoEntrada = 'Escolha um nome antes de treinar.';
+      focarCampoNome();
+      return;
+    }
     if (escolhido) {
       nome = escolhido;
       try { localStorage.setItem('tank:nome', escolhido); } catch { /* modo privado */ }
@@ -1268,6 +1292,10 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       monitorDeSalas.ligar();
       if (!primeiraRespostaDeSalas) renderSalasAbertas(telas.lobby, { salas: [], carregando: true });
       renderEntrada(telas.lobby, { nome, codigo: codigoDigitado, aviso: avisoEntrada, ocupado: conectando });
+      if (focoInicialPendente) {
+        focoInicialPendente = false;
+        focarCampoNome();
+      }
       setTela(telas, 'lobby');
     } else if (fase === 'lobby') {
       monitorDeSalas.desligar();

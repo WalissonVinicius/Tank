@@ -1005,6 +1005,20 @@ body.em-jogo #btn-tela-cheia {
   transition: background 140ms ease, box-shadow 140ms ease;
 }
 
+/* Campo de nome recusado por estar vazio: pulsa em vermelho e chama o olho para onde
+   escrever. Some sozinho no primeiro caractere digitado (ver renderEntrada). */
+#lobby-entrada input.faltando {
+  border-color: var(--alerta, #ff3b3b);
+  animation: campo-faltando 460ms ease;
+}
+
+@keyframes campo-faltando {
+  0%, 100% { transform: translateX(0); }
+  22% { transform: translateX(-5px); }
+  46% { transform: translateX(4px); }
+  72% { transform: translateX(-2px); }
+}
+
 #lobby-entrada input::placeholder {
   color: rgba(148, 164, 198, 0.65);
   font-weight: 400;

@@ -456,6 +456,24 @@ export function renderSalasAbertas(root: HTMLElement, state: SalasState): void {
 }
 
 /** Estado 1: ainda sem sala. */
+/**
+ * Leva o foco ao campo de nome e o destaca por um instante.
+ *
+ * Existe porque o nome virou OBRIGATÓRIO: quem chega por um link de sala já tem o código
+ * preenchido e a ação óbvia na tela é clicar em ENTRAR — o campo vazio logo acima passa
+ * despercebido. Recusar o clique sem mover o foco deixaria a pessoa lendo um aviso sem saber
+ * onde escrever.
+ */
+export function focarCampoNome(): void {
+  if (!els) return;
+  els.campoNome.focus();
+  els.campoNome.select();
+  els.campoNome.classList.remove('faltando');
+  // Reinicia a animação mesmo em cliques seguidos: sem o reflow o browser ignora a re-adição.
+  void els.campoNome.offsetWidth;
+  els.campoNome.classList.add('faltando');
+}
+
 export function renderEntrada(root: HTMLElement, state: EntradaState): void {
   ensureBuilt(root);
   if (!els) return;
@@ -466,6 +484,7 @@ export function renderEntrada(root: HTMLElement, state: EntradaState): void {
   if (document.activeElement !== els.campoNome && els.campoNome.value !== state.nome) {
     els.campoNome.value = state.nome;
   }
+  if (els.campoNome.value.trim().length > 0) els.campoNome.classList.remove('faltando');
   if (document.activeElement !== els.campoCodigo && els.campoCodigo.value !== state.codigo) {
     els.campoCodigo.value = state.codigo;
   }
