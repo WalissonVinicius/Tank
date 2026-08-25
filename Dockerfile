@@ -35,14 +35,14 @@ ENV NODE_ENV=production
 ENV PORT=3000
 ENV DATA_DIR=/app/data
 
-# @tank/protocol e @tank/shared-sim já foram inlinados no bundle do tsup (ver
-# apps/server/tsup.config.ts) — só as dependências externas de produção (express, colyseus,
-# better-sqlite3, openskill...) e o client já compilado precisam ir para a imagem final.
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/apps/server/node_modules ./apps/server/node_modules
-COPY --from=builder /app/apps/server/package.json ./apps/server/package.json
-COPY --from=builder /app/apps/server/dist ./apps/server/dist
-COPY --from=builder /app/apps/client/dist ./apps/client/dist
+# Copia a arvore INTEIRA do builder, nao pedacos escolhidos a dedo.
+#
+# O pnpm monta node_modules como floresta de symlinks: apps/server/node_modules/express
+# aponta para node_modules/.pnpm/express@4.21.2/node_modules/express. Copiando so
+# /app/node_modules + /app/apps/server/node_modules a teia quebra e o container morria com
+# ERR_MODULE_NOT_FOUND "Cannot find package 'express'" -- reiniciando ate o Docker desistir.
+# Copiar /app inteiro garante que o runtime ve exatamente a arvore que funcionou no build.
+COPY --from=builder /app ./
 
 EXPOSE 3000
 CMD ["node", "apps/server/dist/index.js"]
