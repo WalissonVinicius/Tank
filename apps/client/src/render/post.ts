@@ -50,19 +50,30 @@ const PERFIS: Record<NivelFx, PerfilFx> = {
   reduzido: { bloomQuality: 2, bloomPixelSize: 1.6, crt: false },
 };
 
-/** Acima deste framebuffer (em megapixels) a qualidade cheia deixa de fechar 60 fps. */
-const ORCAMENTO_MPX = 2.2;
+/**
+ * Acima deste framebuffer (em megapixels) a qualidade cheia deixa de fechar 60 fps.
+ *
+ * Medido num Intel Iris Xe com 6 bots, 25 s por amostra, contando FRAMES RUINS (acima de 33 ms)
+ * em vez de média — a média mentia aqui: 1080p marcava 59,9 fps de mediana com UM QUARTO dos
+ * frames engasgando, que é exatamente a sensação de "travado" que o jogador relata.
+ *
+ * Com o orçamento em 2,2 o 1080p (2,07 MPX) passava raspando e ficava com a cadeia CHEIA: 25,6%
+ * de frames ruins. Baixando para 1,5 ele passa a usar a cadeia curta e cai para 5%.
+ */
+const ORCAMENTO_MPX = 1.5;
 /**
  * Pixels efetivos que a cadeia passa a processar quando o orçamento estoura.
  *
- * Não é o mesmo número de `ORCAMENTO_MPX` porque, ao cair para `reduzido`, a cadeia fica quase
- * pela METADE: o CRT sai (um passe cheio a menos) e o bloom vai de `quality` 4 para 2, o que
- * corta quatro dos oito passes de blur. Sobram ~5 passes contra ~10. Manter o alvo em 1,95 MPX
- * (o que se pagava com a cadeia CHEIA) jogava a resolução para 0,63 em 3440×1440 — e a Fase 9,
- * que fez a arena preencher a tela inteira, deixou esse amassado óbvio no piso. 3,6 MPX é
- * aproximadamente o mesmo custo de GPU com a cadeia curta, com margem.
+ * Já esteve em 3,6 — valor escolhido para evitar amassar o piso em ultrawide, com a hipótese de
+ * que a cadeia curta (~5 passes contra ~10) compensaria os pixels a mais. A medição desmentiu:
+ * em 2560×1440 (3,69 MPX) o alvo 3,6 devolvia resolução 0,99, ou seja, economia nenhuma, e o
+ * jogo rodava a 20 fps com 70% dos frames ruins.
+ *
+ * 2,2 devolve 0,77 em 1440p e restaura 59,9 fps com 7% de frames ruins. A nitidez não sofre
+ * porque quem roda em resolução reduzida é só a CADEIA DE FILTROS — o mundo (tanques, paredes,
+ * texto) continua sendo rasterizado em resolução cheia.
  */
-const ALVO_MPX = 3.6;
+const ALVO_MPX = 2.2;
 /** Piso da resolução: abaixo disto a arena começa a ler como borrada, não como suave. */
 const RES_MIN = 0.55;
 
