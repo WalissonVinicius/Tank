@@ -1,11 +1,18 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Stage 1: build ----------
-# Alpine não traz binário pré-compilado do better-sqlite3 para todas as combinações de
-# arquitetura/libc; python3 make g++ garantem que o node-gyp compila a extensão nativa na hora
-# do `pnpm install` caso o prebuild não bata.
-FROM node:24-alpine AS builder
-RUN apk add --no-cache python3 make g++
+# Debian (glibc), NÃO Alpine (musl) — e isso é uma decisão de rede, não de gosto.
+#
+# No Alpine o better-sqlite3 não encontra binário pré-compilado (os prebuilds publicados são
+# para glibc), então cai no node-gyp, que precisa baixar os headers do Node do
+# `unofficial-builds.nodejs.org` — o único host que serve headers musl e o mais frágil da
+# cadeia, sem CDN. O build morria ali com `read ETIMEDOUT`.
+#
+# Com glibc o prebuild casa e nada é compilado. python3/make/g++ ficam só como rede de
+# segurança: se algum dia o prebuild faltar, o node-gyp compila buscando os headers no
+# nodejs.org oficial.
+FROM node:24-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 
 WORKDIR /app
@@ -26,7 +33,7 @@ RUN pnpm build
 RUN pnpm config set confirm-modules-purge false && pnpm prune --prod
 
 # ---------- Stage 2: runtime ----------
-FROM node:24-alpine AS runtime
+FROM node:24-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
