@@ -14,6 +14,8 @@ arquivo de imagem.
 - **Mover**: WASD (setas também funcionam) — `W`/`S` andam e dão ré, `A`/`D` giram o tanque
 - **Mirar**: a torre segue o cursor do mouse; ela não vira instantâneo, gira até lá
 - **Atirar**: botão esquerdo do mouse (espaço também funciona). A bala sai na direção da torre
+- **Sair**: `Esc` abre o menu de pausa (VOLTAR AO JOGO / SAIR DA SALA). Online a partida continua
+  rolando para os outros enquanto o menu está aberto; no treino ela fica parada de verdade
 - Antes de cada rodada aparece a contagem **3 · 2 · 1 · VAI!** — ninguém anda nem atira até o VAI
 - A bala ricocheteia 1× e mata em 1 toque — **inclusive quem atirou**
 - Pontuação por rodada: sobreviver rende mais pontos (quem sai por último ganha mais), **+1** por
@@ -34,7 +36,9 @@ Isso sobe o servidor (`tsx watch`, porta 3000) e o client (Vite, porta 5173) jun
 
 - **Modo local** (sem servidor, só para testar o render/jogo sozinho, com bots):
   `http://localhost:5173/?local=1&bots=6&seed=42`
-- **Modo online**: crie uma sala pelo lobby ou entre direto com `?sala=XXXX` no link.
+- **Modo online**: crie uma sala pelo lobby, clique numa das **salas abertas** listadas na tela de
+  entrada, ou entre direto com `?sala=XXXX` no link. Quem cria a sala pode encher as vagas com
+  bots pelo `+ BOT` / `− BOT` do lobby.
 
 ## Testes
 
@@ -60,7 +64,8 @@ verdade, usada tanto pelo servidor quanto pelo client.
 3. Configure as variáveis de ambiente (veja `.env.example` abaixo) e, se quiser persistir
    ranking entre deploys, monte um volume em `DATA_DIR` (por padrão `/app/data` — veja
    `docker-compose.yml` para rodar o equivalente localmente).
-4. Deploy. O healthcheck fica em `GET /healthz`.
+4. Deploy. O healthcheck fica em `GET /healthz`; a lista de salas abertas que a tela de entrada
+   consome fica em `GET /salas`.
 
 ### Variáveis de ambiente
 

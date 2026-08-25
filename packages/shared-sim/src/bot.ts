@@ -400,6 +400,7 @@ export function botInput(
   tank: Tank,
   moveTarget: Vec2,
   anguloDeMira: number,
+  temLos: boolean,
   temTiro: boolean,
   ruido: number,
   config: BotConfig,
@@ -414,7 +415,11 @@ export function botInput(
   // sem isso um bot com `aimErrorRad` menor que a resolução de giro nunca considera "mirado".
   const torreAlinhada = Math.abs(normalizeAngle(aim - tank.turret)) < Math.max(config.turnThreshold, TURRET_RATE / 60);
 
-  const move: -1 | 0 | 1 = temTiro ? (chassiAlinhado ? 1 : 0) : 1;
+  // Quem MANDA no `move` é a linha de visão, não o gatilho: com o inimigo à vista o bot só avança
+  // depois de encarar o alvo, mas navegando às cegas pelo labirinto ele não pode parar a cada
+  // curva — e desde o ricochete ele atira sem ter o inimigo à vista, que é justamente o caso em
+  // que ele está andando por waypoint.
+  const move: -1 | 0 | 1 = temLos ? (chassiAlinhado ? 1 : 0) : 1;
   return { turn, move, fire: temTiro && torreAlinhada, aim };
 }
 
@@ -458,9 +463,8 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
 
   let tickDaUltimaAmeaca = -9999;
 
-  // Defasagem fixa por bot, sorteada uma vez: sem ela os nove bots da sala replanejam ricochete
-  // no MESMO tick e o servidor leva uma agulhada de trabalho a cada 20 ticks em vez de trabalho
-  // espalhado. Vem do RNG semeado, então continua idêntica no cliente e no servidor.
+  // Defasagem fixa deste bot dentro do ciclo de replanejamento (ver o uso, logo abaixo). Vem do
+  // RNG semeado, então é idêntica no cliente e no servidor.
   const defasagem = rng.int(TICKS_ENTRE_PLANOS_DE_TIRO);
 
   return {
@@ -483,7 +487,11 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
       let temTiro = temLos;
       if (!temLos && config.ricocheteia) {
         if (planoTick === null || tick - planoTick >= TICKS_ENTRE_PLANOS_DE_TIRO) {
-          planoTick = tick + (defasagem % 3);
+          // A primeira avaliação sai na hora (perder o inimigo de vista e ficar meio segundo sem
+          // resposta seria pior que o custo), mas o relógio dela nasce RECUADO pela defasagem
+          // deste bot: é isso que espalha os replanejamentos seguintes entre os bots da sala, em
+          // vez de deixar os nove recalculando ricochete no mesmo tick.
+          planoTick = planoTick === null ? tick - defasagem : tick;
           planoDeTiro = planejarRicochete(tank, target, maze, config.evitaAutogol);
         }
         if (planoDeTiro !== null) {
@@ -519,7 +527,7 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
         moveTarget = waypoint ?? target;
       }
 
-      const input = botInput(tank, moveTarget, anguloDeMira, temTiro, ruido, config);
+      const input = botInput(tank, moveTarget, anguloDeMira, temLos, temTiro, ruido, config);
 
       // Fugir e se cobrir MANDAM no chassi; a torre continua com a mira montada acima, então o
       // bot atira de lado enquanto corre — que é exatamente o que um jogador humano faz.

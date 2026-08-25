@@ -46,14 +46,19 @@ import {
 import {
   renderEntrada,
   renderLobby,
+  renderSalasAbertas,
+  setLobbyBotHandler,
   setLobbyCorHandler,
   setLobbyDigitouHandler,
   setLobbyEntradaHandler,
   setLobbyReadyHandler,
+  setLobbySalaHandler,
   setLobbyTreinoHandler,
   type AcaoEntrada,
   type LobbyPlayer,
 } from './ui/lobby.js';
+import { renderPausa, setPausaHandlers } from './ui/pausa.js';
+import { MonitorDeSalas } from './net/salas.js';
 import {
   renderResult,
   resetResult,
@@ -84,6 +89,8 @@ interface Telas {
 interface Camadas {
   contagem: HTMLElement;
   game: HTMLElement;
+  /** Menu de pausa (Fase 13 §1) — também por cima, e é ele que segura os cliques quando aberto. */
+  pausa: HTMLElement;
 }
 
 /** Quanto tempo o "VAI!" fica na tela depois que a contagem zera — casa com `contagem-vai` no CSS. */
@@ -352,6 +359,21 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
   // desenvolvimento continua só o "jogar de novo" de sempre.
   setResultVoltarHandler(treino ? () => location.assign(location.pathname) : null);
 
+  // Menu de pausa (Fase 13 §1). Offline não há ninguém esperando, então `Esc` pausa DE VERDADE:
+  // o laço fixo abaixo simplesmente não avança enquanto o menu está aberto.
+  let menuAberto = false;
+  window.addEventListener('keydown', (ev) => {
+    if (ev.code !== 'Escape') return;
+    ev.preventDefault();
+    menuAberto = !menuAberto;
+  });
+  setPausaHandlers(
+    () => {
+      menuAberto = false;
+    },
+    () => location.assign(location.pathname),
+  );
+
   const corDaBala = (ownerId: string | undefined): number =>
     (ownerId ? playersById.get(ownerId)?.color : undefined) ?? 0xffb347;
 
@@ -474,7 +496,9 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
     // barato (poucos milhares de ticks de `step()`, roda em milissegundos) e só existe para não
     // rodar ticks demais se a aba ficar em segundo plano por muito tempo.
     delta = Math.min(delta, 60);
-    acumulador.valor += delta;
+    // Com o menu aberto o tempo não corre: sem isto o acumulador guardaria os segundos parados e
+    // a partida daria um salto de vários ticks no instante em que o menu fechasse.
+    acumulador.valor += menuAberto ? 0 : delta;
 
     while (acumulador.valor >= dt) {
       acumulador.valor -= dt;
@@ -572,7 +596,9 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
       void tocar(mostrandoVai ? SOM_VAI : SOM_BIPE);
     }
 
-    setAudioAtivo(emJogo);
+    renderPausa(camadas.pausa, { aberto: menuAberto, modo: 'treino' });
+
+    setAudioAtivo(emJogo && !menuAberto);
     contagemSonora.acompanhar(roundTimeLeft, fase === 'playing');
 
     if (emJogo) {
@@ -696,6 +722,8 @@ interface ServerRoomState {
   /** Proporção do labirinto da rodada, decidida pelo servidor (Fase 9). 0 = ainda não houve rodada. */
   aspect: number;
   timeLeft: number;
+  /** Dono da sala — o único que pode colocar e tirar bots no lobby (Fase 13 §3). */
+  ownerId: string;
   players: Iterable<[string, ServerPlayerState]>;
 }
 
@@ -728,6 +756,10 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   // saber se o "jogar de novo" fez alguma coisa.
   let avisoEntrada = (() => {
     try {
+      if (sessionStorage.getItem('tank:saiu') === '1') {
+        sessionStorage.removeItem('tank:saiu');
+        return 'Você saiu da sala. Entre em outra ou crie a sua.';
+      }
       if (sessionStorage.getItem('tank:voltou') !== '1') return '';
       sessionStorage.removeItem('tank:voltou');
       return 'Partida encerrada. Crie uma sala nova ou entre com o código de outra.';
@@ -737,6 +769,12 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   })();
   let conectando = false;
   let conectado = false;
+  // Menu de pausa e saída da sala (Fase 13 §1).
+  let menuAberto = false;
+  let saindo = false;
+  // Salas abertas da tela de entrada (Fase 13 §2): a consulta roda fora do laço de render, e o
+  // resultado só é redesenhado quando muda.
+  let primeiraRespostaDeSalas = false;
 
   let playersById = new Map<string, ServerPlayerState>();
   let slotToId = new Map<number, string>();
@@ -748,6 +786,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   let round = 0;
   let timeLeft = 0;
   let seedAtual = -1;
+  let ownerId = '';
   let reconnecting = false;
   let vencedorRodada: string | null = null;
   let titulosFinais: Titulo[] = [];
@@ -856,6 +895,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       fase = s.phase;
       round = s.round;
       timeLeft = s.timeLeft;
+      ownerId = s.ownerId ?? '';
 
       // Rede de segurança para quem entra com a partida já em andamento e nunca recebeu o
       // `round_start` daquela rodada: reconstrói o labirinto pela seed do estado frio.
@@ -1006,6 +1046,64 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   // com o mesmo destino só criariam dúvida.
   setResultVoltarHandler(null);
 
+  /**
+   * SAIR DA SALA (Fase 13 §1). O `net.sair()` ESPERA o servidor confirmar antes da recarga: é
+   * essa confirmação que faz a saída chegar lá como intencional (a vaga é devolvida na hora e o
+   * tanque some da arena dos outros) em vez de como queda de conexão, que seguraria tudo por 30 s.
+   *
+   * A volta é uma recarga pelo mesmo motivo do "jogar de novo" da Fase 12: é o único jeito de não
+   * sobrar nada da partida. Nome e cor sobrevivem porque moram no `localStorage`.
+   */
+  const sairDaSala = async (): Promise<void> => {
+    if (saindo) return;
+    saindo = true;
+    menuAberto = false;
+    await net.sair();
+    try {
+      sessionStorage.setItem('tank:saiu', '1');
+    } catch {
+      /* modo privado */
+    }
+    location.assign(location.pathname);
+  };
+
+  // `Esc` abre e fecha o menu. Vale no lobby da sala também: ficar preso esperando os outros
+  // ficarem prontos era exatamente o outro jeito de não conseguir sair.
+  window.addEventListener('keydown', (ev) => {
+    if (ev.code !== 'Escape') return;
+    if (!conectado || saindo) return;
+    ev.preventDefault();
+    menuAberto = !menuAberto;
+  });
+  setPausaHandlers(
+    () => {
+      menuAberto = false;
+    },
+    () => void sairDaSala(),
+  );
+
+  // Lista de SALAS ABERTAS (Fase 13 §2): pergunta a cada 3 s enquanto a tela de entrada está à
+  // vista e para sozinha quando ela sai (ver `MonitorDeSalas`).
+  const monitorDeSalas = new MonitorDeSalas((salas, erro) => {
+    primeiraRespostaDeSalas = true;
+    renderSalasAbertas(telas.lobby, { salas, erro, carregando: false });
+  });
+
+  setLobbySalaHandler((codigo) => {
+    if (conectando || conectado) return;
+    codigoDigitado = codigo;
+    if (!nome.trim()) {
+      avisoEntrada = 'Escolha seu nome para entrar na sala.';
+      return;
+    }
+    avisoEntrada = '';
+    void conectar('entrar', nome, codigo);
+  });
+
+  // `+ BOT` / `− BOT` do lobby. O cliente só PEDE: quem confere que o pedido veio do dono, que a
+  // sala ainda está no lobby e que há vaga é o servidor.
+  setLobbyBotHandler((delta) => net.sendBot(delta));
+
   async function conectar(acao: AcaoEntrada, nomeInformado: string, codigo: string): Promise<void> {
     if (conectando) return;
     conectando = true;
@@ -1114,7 +1212,12 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
 
     if (conectado && agora - ultimoEnvio >= 1000 / 30) {
       ultimoEnvio = agora;
-      const meu = controls.read(minhaAmostra);
+      // Com o menu de pausa aberto o tanque para de responder — a partida continua para os
+      // outros, mas as teclas que a pessoa está usando para navegar o menu não podem virar
+      // movimento. `read(null)` continua sendo chamado para CONSUMIR a borda de tiro: sem isso,
+      // um clique dado no menu sairia como disparo no instante em que ele fechasse.
+      const bruto = controls.read(menuAberto ? null : minhaAmostra);
+      const meu: Input = menuAberto ? { turn: 0, move: 0, fire: false } : bruto;
       ultimoAim = meu.aim;
       net.sendInput(meu, seq++);
     }
@@ -1157,11 +1260,17 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     }
 
     contagemSonora.acompanhar(timeLeft, conectado && fase === 'playing');
+    renderPausa(camadas.pausa, { aberto: menuAberto, modo: 'online', roomCode: net.roomId });
 
     if (!conectado) {
+      // A lista de salas só existe enquanto esta tela existe: entrar numa sala desliga o monitor
+      // e para de consultar o servidor.
+      monitorDeSalas.ligar();
+      if (!primeiraRespostaDeSalas) renderSalasAbertas(telas.lobby, { salas: [], carregando: true });
       renderEntrada(telas.lobby, { nome, codigo: codigoDigitado, aviso: avisoEntrada, ocupado: conectando });
       setTela(telas, 'lobby');
     } else if (fase === 'lobby') {
+      monitorDeSalas.desligar();
       const lobbyPlayers: LobbyPlayer[] = [...playersById.values()].map((p) => ({
         id: p.id,
         name: p.name,
@@ -1183,9 +1292,11 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         countdown: null,
         aviso: lobbyPlayers.length < 2 ? 'ESPERANDO MAIS UM JOGADOR' : 'TODOS PRONTOS = COMEÇA',
         avisoCor: corNegada ? 'aquela já era de outro' : '',
+        souDono: ownerId !== '' && ownerId === meId,
       });
       setTela(telas, 'lobby');
     } else if (fase === 'countdown' || fase === 'playing') {
+      monitorDeSalas.desligar();
       const me = playersById.get(meId);
       const ammoMax = maxBulletsFor(playersById.size);
       const minhasBalas = (bulletPredictor?.bullets ?? []).filter((b) => b.ownerId === meId).length;
@@ -1256,13 +1367,23 @@ async function main(): Promise<void> {
   const roundendEl = document.getElementById('roundend');
   const resultEl = document.getElementById('result');
   const contagemEl = document.getElementById('contagem');
+  const pausaEl = document.getElementById('pausa');
   const telaCheiaEl = document.getElementById('btn-tela-cheia');
-  if (!gameEl || !lobbyEl || !hudEl || !roundendEl || !resultEl || !contagemEl || !(telaCheiaEl instanceof HTMLButtonElement)) {
+  if (
+    !gameEl ||
+    !lobbyEl ||
+    !hudEl ||
+    !roundendEl ||
+    !resultEl ||
+    !contagemEl ||
+    !pausaEl ||
+    !(telaCheiaEl instanceof HTMLButtonElement)
+  ) {
     throw new Error('Estrutura do index.html incompleta.');
   }
 
   const telas: Telas = { lobby: lobbyEl, hud: hudEl, roundend: roundendEl, result: resultEl };
-  const camadas: Camadas = { contagem: contagemEl, game: gameEl };
+  const camadas: Camadas = { contagem: contagemEl, game: gameEl, pausa: pausaEl };
 
   const renderer = await Renderer.create(gameEl);
   window.addEventListener('resize', () => renderer.resize());

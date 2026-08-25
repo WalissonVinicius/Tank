@@ -222,7 +222,10 @@ describe('bot difícil × bot fácil — 100 duelos com seeds diferentes', () =>
       else empates += 1;
     }
 
-    console.log(`[Fase 13] duelo 100 partidas — difícil ${dificil} × fácil ${facil} (empates ${empates})`);
+    // `shared-sim` compila sem `lib: dom` e sem os tipos do Node (é matemática pura), então o
+    // `console` do runner vem pelo `globalThis` — o pacote continua sem depender de ambiente.
+    const saida = (globalThis as { console?: { log(mensagem: string): void } }).console;
+    saida?.log(`[Fase 13] duelo 100 partidas — difícil ${dificil} × fácil ${facil} (empates ${empates})`);
     expect(dificil).toBeGreaterThan(facil);
     expect(dificil + facil).toBeGreaterThan(40);
   });

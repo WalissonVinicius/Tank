@@ -31,6 +31,10 @@
       <!-- Overlay, não `.tela`: a contagem aparece POR CIMA da arena e do HUD, sem escondê-los. -->
       <div id="contagem"></div>
 
+      <!-- Menu de pausa (Esc). Também overlay: a arena continua rodando atrás dele, porque a
+           partida NÃO para para os outros jogadores. -->
+      <div id="pausa"></div>
+
       <!-- Fora das `.tela` de propósito: tela cheia vale no lobby, no jogo e no placar, e a
            Fullscreen API exige que a chamada saia de um gesto do usuário (clique ou tecla F). -->
       <button id="btn-tela-cheia" type="button" title="TELA CHEIA" aria-label="TELA CHEIA">

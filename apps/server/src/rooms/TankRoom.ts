@@ -1,5 +1,7 @@
 import { CloseCode, Room, matchMaker, type Client } from '@colyseus/core';
 import {
+  ANIMAL_NOME,
+  animalDaCor,
   COUNTDOWN,
   MAZE_ASPECT_DEFAULT,
   MAZE_ASPECT_MAX,
@@ -239,9 +241,9 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     this.publicarSala();
 
     // Sala sem nenhum humano não tem por que continuar viva: sem isto ela ficaria rodando uma
-    // partida de bots para plateia nenhuma até o processo morrer. Só desconecta se ainda houver
-    // cliente ligado — com a sala vazia o `autoDispose` do Colyseus já faz o serviço.
-    if (this.humanosNaSala() === 0 && this.clients.length > 0) {
+    // partida de bots para plateia nenhuma, e continuaria aparecendo na lista de salas abertas
+    // como se alguém estivesse esperando lá dentro. `disconnect()` já é idempotente.
+    if (this.humanosNaSala() === 0) {
       void this.disconnect(CloseCode.CONSENTED).catch(() => undefined);
     }
     void code;
@@ -260,6 +262,14 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
   onReconnect(client: Client): void {
     const player = this.state.players.get(client.sessionId);
     if (player) player.connected = true;
+  }
+
+  /**
+   * Ids dos tanques na rodada em curso (vazio fora dela). Exposto — como o `update()` — só para o
+   * teste conferir que quem saiu da sala não ficou de fantasma parado na arena.
+   */
+  tanquesNaSimulacao(): string[] {
+    return this.sim ? Array.from(this.sim.tanks.keys()) : [];
   }
 
   /**
@@ -329,10 +339,16 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
 
     const player = new PlayerState();
     player.id = sessionId;
-    player.name = nome?.trim() || TEST_PLAYER_NAMES[slot % TEST_PLAYER_NAMES.length]!;
     // A cor deixou de ser função do slot (Fase 10): agora ela é escolhida e por isso viaja
     // separada. `corLivre` mantém a garantia antiga de que duas não se repetem na sala.
     player.color = this.corLivre(cor);
+    // Bot leva o nome do ANIMAL da própria cor (Fase 13 §3). Antes ele pegava um nome da lista de
+    // teste pelo slot, e com bots entrando pelo lobby isso passou a produzir dois "Bruno" na
+    // mesma sala — um de carne e osso e outro não. Como cor e animal são par fixo e a cor é única
+    // por sala, o nome do bot também é.
+    player.name = isBot
+      ? `Bot ${ANIMAL_NOME[animalDaCor(player.color)]}`
+      : nome?.trim() || TEST_PLAYER_NAMES[slot % TEST_PLAYER_NAMES.length]!;
     player.slot = slot;
     player.isBot = isBot;
     player.ready = isBot;

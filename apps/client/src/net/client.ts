@@ -157,11 +157,15 @@ export interface JoinInfo {
 }
 
 const TOKEN_REFRESH_MS = 3_000;
+/** Teto de espera pelo "saí mesmo" do servidor antes de a página recarregar (ver `sair`). */
+const ESPERA_MAX_SAIDA_MS = 600;
 
 export class NetClient {
   private client: Client;
   private room: Room | null = null;
   private reconnecting = false;
+  /** Saída pedida pelo jogador: o `onLeave` que vier a seguir NÃO deve virar tentativa de reconexão. */
+  private saindoDeProposito = false;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private handlers: NetHandlers) {
@@ -240,12 +244,47 @@ export class NetClient {
     this.room?.send(MessageType.Viewport, { aspect });
   }
 
+  /**
+   * Pede ao servidor para colocar (`+1`) ou tirar (`-1`) um bot da sala. Só o dono é atendido —
+   * quem confere é o `TankRoom`, e o resultado aparece no `players` do estado frio.
+   */
+  sendBot(delta: 1 | -1): void {
+    this.room?.send(delta > 0 ? MessageType.AddBot : MessageType.RemoveBot);
+  }
+
   leave(): void {
+    this.saindoDeProposito = true;
     clearReconnect();
     if (this.refreshTimer !== null) clearInterval(this.refreshTimer);
     this.refreshTimer = null;
     this.room?.leave(true);
     this.room = null;
+  }
+
+  /**
+   * SAIR DA SALA pelo menu de pausa (Fase 13 §1) — a versão que ESPERA o servidor confirmar.
+   *
+   * A diferença para o `leave()` acima é que aqui quem chama vai recarregar a página em seguida,
+   * e um `leave` disparado sem esperar morre junto com a aba: o servidor nunca receberia o pedido
+   * de saída consentida, cairia no caminho de QUEDA e seguraria a vaga (e o tanque na arena) por
+   * 30 s. O teto de espera evita prender a interface numa rede ruim — a saída acontece de um
+   * jeito ou de outro.
+   */
+  async sair(): Promise<void> {
+    this.saindoDeProposito = true;
+    clearReconnect();
+    if (this.refreshTimer !== null) clearInterval(this.refreshTimer);
+    this.refreshTimer = null;
+
+    const room = this.room;
+    this.room = null;
+    if (!room) return;
+
+    try {
+      await Promise.race([room.leave(true), new Promise((resolve) => setTimeout(resolve, ESPERA_MAX_SAIDA_MS))]);
+    } catch {
+      // servidor já tinha fechado a conexão — para quem está saindo, dá no mesmo
+    }
   }
 
   get roomId(): string {
@@ -279,7 +318,9 @@ export class NetClient {
     room.onMessage(MessageType.GameOver, (msg: GameOverMsg) => this.handlers.onGameOver(msg));
 
     room.onLeave((code: number) => {
-      if (this.reconnecting || code === 1000) return;
+      // Saída pedida pelo jogador fecha com código de "consentida" — reconectar aqui seria
+      // reentrar na sala de onde ele acabou de sair.
+      if (this.saindoDeProposito || this.reconnecting || code === 1000) return;
       void this.attemptReconnect(room);
     });
   }

@@ -860,12 +860,15 @@ body.em-jogo #btn-tela-cheia {
   display: none;
 }
 
+/* Três colunas desde a Fase 13: a marca apresenta o jogo, o cartão pede nome e código, e a lista
+   de salas abertas mostra onde já tem gente. O gap e o padding encolheram junto — com a folga de
+   6vw de antes, a terceira coluna empurrava o título para fora da tela em 1280 px. */
 #lobby.em-entrada #lobby-entrada {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: clamp(28px, 6vw, 86px);
-  padding: 0 6vw;
+  gap: clamp(20px, 3.2vw, 64px);
+  padding: 0 clamp(18px, 3vw, 56px);
 }
 
 #lobby.em-sala #lobby-sala {
@@ -896,6 +899,9 @@ body.em-jogo #btn-tela-cheia {
 /* ----- entrada ----- */
 #lobby-entrada .marca {
   max-width: 540px;
+  /* Sem isto o item flex nunca encolhe abaixo do tamanho do próprio título, e o "RICOCHETE"
+     vaza para fora da tela quando a coluna de salas entra em cena. */
+  min-width: 0;
 }
 
 #lobby-entrada .linha-topo {
@@ -2684,4 +2690,266 @@ body.em-jogo #btn-tela-cheia {
 }
 @media (max-height: 780px) {
   #lobby-entrada .arte-tank { width: min(21vw, 220px); margin-bottom: -16px; }
+}
+
+/* =============================================================================================
+   FASE 13 — sair da sala, ver salas abertas e mexer nos bots
+   ============================================================================================= */
+
+/* ----- menu de pausa (Esc) -----
+   Overlay como a contagem regressiva, mas ao contrário dela CAPTURA os cliques: com o menu
+   aberto, clicar na arena atrás não pode virar tiro. A arena continua rodando por baixo — a
+   partida não para para os outros —, e o véu escuro é o que separa "menu" de "jogo". */
+#pausa {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+  background: radial-gradient(circle at 50% 45%, rgba(7, 10, 18, 0.86), rgba(7, 10, 18, 0.66) 70%);
+  backdrop-filter: blur(2px);
+}
+
+#pausa.aberto {
+  display: flex;
+}
+
+#pausa .pausa-painel {
+  width: min(92vw, 380px);
+  padding: 24px 26px 20px;
+  text-align: center;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 20px;
+  box-shadow: 0 8px 0 var(--traco);
+}
+
+#pausa h2 {
+  margin: 0 0 4px;
+  font-family: var(--fd);
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-indent: 0.22em;
+  color: var(--creme);
+  text-shadow: var(--contorno);
+}
+
+#pausa .pausa-sala {
+  margin: 0 0 18px;
+  min-height: 16px;
+  font-family: var(--fd);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.26em;
+  color: var(--amarelo);
+}
+
+#pausa .botao-jogo + .botao-jogo {
+  margin-top: 12px;
+}
+
+/* SAIR é vermelho, não amarelo: é a ação que tira a pessoa da partida, e as duas não podem ter
+   o mesmo peso — quem só quer voltar ao jogo tem que acertar de primeira. */
+#pausa .botao-jogo.sair {
+  color: var(--creme);
+  background: var(--vermelho);
+  font-size: 15px;
+  padding: 12px 20px;
+}
+
+#pausa .pausa-dica {
+  margin: 16px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--texto-fraco);
+}
+
+/* ----- salas abertas (tela de entrada) -----
+   Terceira coluna, à direita do cartão: a marca apresenta o jogo, o cartão pede nome e código, e
+   esta coluna mostra onde já tem gente esperando. */
+#lobby-entrada .salas {
+  width: 252px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  max-height: 68vh;
+}
+
+/* Na faixa em que as três colunas dividem a largura, o título cede um pouco: ele é o único
+   elemento da tela cujo tamanho é puro impacto, e ficar inteiro vale mais que ficar enorme.
+   Acima de 1600 px sobra espaço para todo mundo e ele volta ao tamanho de sempre. */
+@media (max-width: 1600px) {
+  #lobby-entrada h1 {
+    font-size: clamp(44px, 5.9vw, 88px);
+  }
+}
+
+#lobby-entrada .salas .cabeca {
+  margin-bottom: 8px;
+}
+
+#lobby-entrada .salas .lbl {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  color: var(--amarelo);
+}
+
+#lobby-lista-salas {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+#lobby-lista-salas .vazio {
+  margin: 0;
+  padding: 14px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--texto-fraco);
+  background: var(--painel-2);
+  border: var(--b) dashed rgba(122, 140, 178, 0.35);
+  border-radius: 12px;
+  text-align: center;
+}
+
+/* Cada sala é um botão inteiro (não uma linha com um botão dentro): o alvo de clique é a ficha
+   toda, que é o que a pessoa enxerga como "essa aqui". */
+#lobby-lista-salas .sala {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas: 'cod quem' 'cod selo';
+  align-items: center;
+  gap: 2px 12px;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--texto);
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 12px;
+  box-shadow: 0 4px 0 var(--traco);
+  cursor: pointer;
+  transition: transform 80ms ease, box-shadow 80ms ease, background 120ms ease;
+}
+
+#lobby-lista-salas .sala:hover {
+  background: #24325c;
+}
+
+#lobby-lista-salas .sala:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 var(--traco);
+}
+
+#lobby-lista-salas .sala .cod {
+  grid-area: cod;
+  font-family: var(--fd);
+  font-size: 27px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--amarelo);
+  text-shadow: var(--contorno-fino);
+}
+
+#lobby-lista-salas .sala .quem {
+  grid-area: quem;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--texto);
+}
+
+#lobby-lista-salas .sala .quem i {
+  display: block;
+  font-size: 10px;
+  font-style: normal;
+  color: var(--texto-fraco);
+}
+
+#lobby-lista-salas .sala .selo {
+  grid-area: selo;
+  justify-self: start;
+  font-family: var(--fd);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--traco);
+  background: var(--verde);
+  border-radius: 6px;
+  padding: 1px 7px 2px;
+}
+
+#lobby-lista-salas .sala .selo.jogando {
+  color: var(--creme);
+  background: var(--laranja);
+}
+
+@media (max-width: 1180px) {
+  /* Tela estreita: a coluna de salas some antes do cartão — quem tem o código continua entrando,
+     e a lista volta assim que houver largura para ela. */
+  #lobby-entrada .salas {
+    display: none;
+  }
+}
+
+/* ----- + BOT / − BOT no lobby da sala (só para o dono) ----- */
+#lobby-sala .cabeca-vagas .controle-bots {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  margin-right: 10px;
+}
+
+#lobby-sala .cabeca-vagas .controle-bots[hidden] {
+  display: none;
+}
+
+#lobby-sala .cabeca-vagas .controle-bots .rot {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--texto-fraco);
+}
+
+#lobby-sala .cabeca-vagas .controle-bots .rot b {
+  color: var(--creme);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+#lobby-sala .cabeca-vagas .controle-bots button {
+  width: 30px;
+  height: 30px;
+  font-family: var(--fd);
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--texto);
+  background: var(--painel-3);
+  border: 2px solid var(--traco);
+  border-radius: 9px;
+  box-shadow: 0 3px 0 var(--traco);
+  cursor: pointer;
+  transition: transform 80ms ease, box-shadow 80ms ease, background 120ms ease, color 120ms ease;
+}
+
+#lobby-sala .cabeca-vagas .controle-bots button:hover:not(:disabled) {
+  color: var(--traco);
+  background: var(--amarelo);
+}
+
+#lobby-sala .cabeca-vagas .controle-bots button:active:not(:disabled) {
+  transform: translateY(2px);
+  box-shadow: 0 1px 0 var(--traco);
+}
+
+#lobby-sala .cabeca-vagas .controle-bots button:disabled {
+  color: rgba(234, 240, 255, 0.28);
+  cursor: default;
 }

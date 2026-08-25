@@ -4,7 +4,9 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { Server, matchMaker } from '@colyseus/core';
 import { WebSocketTransport } from '@colyseus/ws-transport';
+import { ROTA_SALAS } from '@tank/protocol';
 import { TankRoom } from './rooms/TankRoom.js';
+import { listarSalasAbertas, TIPO_DE_SALA } from './net/salas.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_DIST = path.resolve(__dirname, '../../client/dist');
@@ -23,6 +25,22 @@ const gameServer = new Server({
       res.json({ ok: true, uptime: process.uptime(), rooms: matchMaker.stats.local.roomCount });
     });
 
+    // Salas abertas (Fase 13 §2). Fica ANTES do estático e do fallback de SPA: registrada depois,
+    // ela cairia no `index.html` e o cliente tentaria dar `JSON.parse` numa página inteira.
+    // `no-store` porque a tela de entrada repergunta a cada 3 s e uma resposta em cache mostraria
+    // sala que já encheu (ou esconderia a que acabou de abrir).
+    app.get(ROTA_SALAS, (_req, res) => {
+      void listarSalasAbertas()
+        .then((salas) => {
+          res.set('Cache-Control', 'no-store');
+          res.json({ salas });
+        })
+        .catch((err: unknown) => {
+          console.error('[salas] falha ao listar:', err);
+          res.status(500).json({ salas: [] });
+        });
+    });
+
     app.use(express.static(CLIENT_DIST));
 
     // fallback SPA — qualquer rota não estática nem de matchmaking cai no index.html do client
@@ -34,7 +52,7 @@ const gameServer = new Server({
   },
 });
 
-gameServer.define('tank_room', TankRoom);
+gameServer.define(TIPO_DE_SALA, TankRoom);
 
 gameServer
   .listen(PORT)

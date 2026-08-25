@@ -6,7 +6,8 @@
 // O fundo é a arena de verdade rodando com bots (ver `ui/vitrine.ts`), desfocada pelo CSS — quem
 // chega pelo link vê o jogo acontecendo antes de entrar.
 
-import { normalizeRoomCode, PLAYER_COLORS, ROOM_CODE_LENGTH, temCaractereAmbiguo } from '@tank/protocol';
+import { normalizeRoomCode, PLAYER_COLORS, ROOM_CODE_LENGTH, temCaractereAmbiguo, VAGAS_POR_SALA } from '@tank/protocol';
+import type { SalaAberta } from '@tank/protocol';
 import { emblemaHtml, nomeDoAnimal } from '../render/animais.js';
 import { ICONE, img } from './icons.js';
 import { desenharTanque } from './tankThumb.js';
@@ -29,6 +30,20 @@ export interface LobbyState {
   aviso?: string;
   /** Aviso discreto do seletor de cor (ex.: a cor guardada estava ocupada). */
   avisoCor?: string;
+  /**
+   * Sou o dono da sala (o primeiro humano que entrou). Só para ele aparecem os botões de bot —
+   * quem decide de verdade é o servidor, que recusa o pedido de qualquer outro (Fase 13 §3).
+   */
+  souDono?: boolean;
+}
+
+/** Estado do bloco SALAS ABERTAS da tela de entrada (Fase 13 §2). */
+export interface SalasState {
+  salas: SalaAberta[];
+  /** Mensagem discreta quando a consulta falha — o formulário ao lado continua valendo. */
+  erro?: string;
+  /** Ainda não voltou nenhuma resposta desde que a tela abriu. */
+  carregando?: boolean;
 }
 
 export interface EntradaState {
@@ -68,6 +83,9 @@ let els: {
   status: HTMLElement;
   cores: HTMLElement;
   avisoCor: HTMLElement;
+  listaSalas: HTMLElement;
+  controleBots: HTMLElement;
+  contadorBots: HTMLElement;
 } | null = null;
 
 let onReadyToggle: (() => void) | null = null;
@@ -75,6 +93,8 @@ let onEntrada: ((acao: AcaoEntrada, nome: string, codigo: string) => void) | nul
 let onTreinar: ((nome: string, bots: number) => void) | null = null;
 let onDigitou: ((nome: string, codigo: string) => void) | null = null;
 let onEscolherCor: ((cor: number) => void) | null = null;
+let onEscolherSala: ((codigo: string) => void) | null = null;
+let onMexerBots: ((delta: 1 | -1) => void) | null = null;
 /** O jogador digitou um caractere que o alfabeto do código evita (I, O, 0, 1). */
 let ambiguoDigitado = false;
 
@@ -83,6 +103,8 @@ let ultimaChaveCores = '';
 let ultimoQr = '';
 let ultimoStatus = '';
 let ultimoAvisoCor = '';
+let ultimaChaveSalas = '';
+let ultimaChaveBots = '';
 
 function css(color: number): string {
   return '#' + (color >>> 0).toString(16).padStart(6, '0');
@@ -127,6 +149,13 @@ function ensureBuilt(root: HTMLElement): void {
           <p class="dica">Sozinho, sem sala, só para pegar o jeito do ricochete.</p>
         </div>
       </div>
+
+      <!-- Fase 13 §2: até aqui só se entrava sabendo o código de cor. Agora as salas que estão
+           esperando gente aparecem aqui, clicáveis. -->
+      <div class="salas">
+        <div class="cabeca"><span class="lbl">SALAS ABERTAS</span></div>
+        <div id="lobby-lista-salas"></div>
+      </div>
     </div>
 
     <div id="lobby-sala">
@@ -166,6 +195,12 @@ function ensureBuilt(root: HTMLElement): void {
         <div class="cabeca-vagas">
           <span class="titulo">NA SALA</span>
           <span class="contador" id="lobby-contador"></span>
+          <!-- Só o dono vê (Fase 13 §3). Bot ocupa vaga e cor como qualquer jogador. -->
+          <span class="controle-bots" id="lobby-controle-bots" hidden>
+            <button type="button" class="bot-menos" data-bot="-1" aria-label="Remover um bot">−</button>
+            <span class="rot">BOTS <b id="lobby-bots-n">0</b></span>
+            <button type="button" class="bot-mais" data-bot="1" aria-label="Adicionar um bot">+</button>
+          </span>
         </div>
         <div id="lobby-vagas"></div>
         <div class="rodape-sala">
@@ -196,7 +231,24 @@ function ensureBuilt(root: HTMLElement): void {
     status: root.querySelector('#lobby-status')!,
     cores: root.querySelector('#lobby-cores')!,
     avisoCor: root.querySelector('#lobby-aviso-cor')!,
+    listaSalas: root.querySelector('#lobby-lista-salas')!,
+    controleBots: root.querySelector('#lobby-controle-bots')!,
+    contadorBots: root.querySelector('#lobby-bots-n')!,
   };
+
+  // Delegação nas duas listas que são redesenhadas: prender ouvinte por linha vazaria um a cada
+  // atualização (a de salas se refaz a cada 3 s).
+  els.listaSalas.addEventListener('click', (ev) => {
+    const alvo = (ev.target as HTMLElement).closest<HTMLElement>('.sala');
+    if (!alvo?.dataset.codigo) return;
+    onEscolherSala?.(alvo.dataset.codigo);
+  });
+
+  els.controleBots.addEventListener('click', (ev) => {
+    const alvo = (ev.target as HTMLElement).closest<HTMLElement>('[data-bot]');
+    if (!alvo) return;
+    onMexerBots?.(alvo.dataset.bot === '-1' ? -1 : 1);
+  });
 
   // Delegação: a grade de cores é redesenhada a cada mudança de sala, então prender um ouvinte
   // por quadrado vazaria ouvinte a cada render.
@@ -349,6 +401,60 @@ export function setLobbyCorHandler(handler: (cor: number) => void): void {
   onEscolherCor = handler;
 }
 
+/**
+ * Clique numa sala da lista de SALAS ABERTAS. Entrar é o mesmo caminho de sempre (o `join` por
+ * código) — o que a lista faz é dispensar a digitação e o "qual era o código mesmo?".
+ */
+export function setLobbySalaHandler(handler: (codigo: string) => void): void {
+  onEscolherSala = handler;
+}
+
+/** Clique em `+ BOT` / `− BOT` no lobby da sala. Só o dono vê os botões; o servidor confere de novo. */
+export function setLobbyBotHandler(handler: (delta: 1 | -1) => void): void {
+  onMexerBots = handler;
+}
+
+/**
+ * Bloco SALAS ABERTAS. Redesenha só quando a lista muda de verdade: a consulta acontece a cada
+ * 3 s e reescrever o HTML a cada volta faria o cursor perder o botão que estava sob ele.
+ */
+export function renderSalasAbertas(root: HTMLElement, state: SalasState): void {
+  ensureBuilt(root);
+  if (!els) return;
+
+  const chave = state.salas.map((s) => `${s.codigo}:${s.humanos}:${s.bots}:${s.emPartida ? 1 : 0}`).join('|') +
+    `#${state.erro ?? ''}#${state.carregando ? 1 : 0}`;
+  if (chave === ultimaChaveSalas) return;
+  ultimaChaveSalas = chave;
+
+  if (state.salas.length === 0) {
+    const vazio = state.erro
+      ? state.erro
+      : state.carregando
+        ? 'procurando salas…'
+        : 'nenhuma sala aberta agora — crie a sua';
+    els.listaSalas.innerHTML = `<p class="vazio">${vazio}</p>`;
+    return;
+  }
+
+  els.listaSalas.innerHTML = state.salas
+    .map((sala) => {
+      const gente = `${sala.humanos} ${sala.humanos === 1 ? 'jogador' : 'jogadores'}`;
+      const bots = sala.bots > 0 ? ` · ${sala.bots} ${sala.bots === 1 ? 'bot' : 'bots'}` : '';
+      // Sala em partida não recusa ninguém: quem entra assiste e joga na rodada seguinte. Dizer
+      // isso na ficha evita a impressão de que o clique não funcionou.
+      const selo = sala.emPartida
+        ? `<span class="selo jogando">EM PARTIDA</span>`
+        : `<span class="selo">${sala.livres} ${sala.livres === 1 ? 'VAGA' : 'VAGAS'}</span>`;
+      return `<button type="button" class="sala${sala.emPartida ? ' jogando' : ''}" data-codigo="${sala.codigo}">
+        <span class="cod">${sala.codigo}</span>
+        <span class="quem">${gente}${bots}${sala.emPartida ? '<i>você entra como espectador</i>' : ''}</span>
+        ${selo}
+      </button>`;
+    })
+    .join('');
+}
+
 /** Estado 1: ainda sem sala. */
 export function renderEntrada(root: HTMLElement, state: EntradaState): void {
   ensureBuilt(root);
@@ -410,6 +516,20 @@ export function renderLobby(root: HTMLElement, state: LobbyState): void {
   const prontos = state.players.filter((p) => p.ready).length;
   const contador = `${state.players.length}/${VAGAS}`;
   if (els.contador.textContent !== contador) els.contador.textContent = contador;
+
+  // Controle de bots: existe só para o dono. Para os outros o bloco nem entra no layout — um
+  // botão desabilitado ficaria sugerindo uma permissão que não é deles.
+  const meusBots = state.players.filter((p) => p.isBot).length;
+  const chaveBots = `${state.souDono ? 1 : 0}:${meusBots}:${state.players.length}`;
+  if (chaveBots !== ultimaChaveBots) {
+    ultimaChaveBots = chaveBots;
+    els.controleBots.hidden = state.souDono !== true;
+    els.contadorBots.textContent = String(meusBots);
+    const menos = els.controleBots.querySelector<HTMLButtonElement>('.bot-menos');
+    const mais = els.controleBots.querySelector<HTMLButtonElement>('.bot-mais');
+    if (menos) menos.disabled = meusBots === 0;
+    if (mais) mais.disabled = state.players.length >= VAGAS_POR_SALA;
+  }
 
   const chave = state.players.map((p) => `${p.id}:${p.name}:${p.color}:${p.ready ? 1 : 0}:${p.isBot ? 1 : 0}`).join('|') + `#${state.meId}`;
   if (chave !== ultimaChaveVagas) {
