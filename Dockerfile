@@ -18,7 +18,12 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm build
 # Remove as devDependencies (typescript, vite, tsup, tsx, vitest...) do node_modules antes de
 # copiar para o stage final — mantém a imagem de produção enxuta.
-RUN pnpm prune --prod
+#
+# O `confirm-modules-purge false` NÃO é opcional aqui: para podar, o pnpm precisa apagar o
+# node_modules e pede confirmação interativa antes. Dentro do Docker não existe TTY, então ele
+# aborta com ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY e derruba o build inteiro na última
+# linha do estágio — depois de já ter instalado tudo e compilado o better-sqlite3.
+RUN pnpm config set confirm-modules-purge false && pnpm prune --prod
 
 # ---------- Stage 2: runtime ----------
 FROM node:24-alpine AS runtime
