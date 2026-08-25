@@ -1,4 +1,4 @@
-import { Room, matchMaker, type Client } from '@colyseus/core';
+import { CloseCode, Room, matchMaker, type Client } from '@colyseus/core';
 import {
   COUNTDOWN,
   MAZE_ASPECT_DEFAULT,
@@ -11,8 +11,9 @@ import {
   SNAPSHOT_HZ,
   TEST_PLAYER_NAMES,
   TICK_HZ,
+  VAGAS_POR_SALA,
 } from '@tank/protocol';
-import type { InputBitsMsg, PickColorMsg, ReadyMsg, ViewportMsg } from '@tank/protocol';
+import type { InputBitsMsg, PickColorMsg, ReadyMsg, SalaMetadata, ViewportMsg } from '@tank/protocol';
 import {
   BOT_DIFFICULTY,
   makeBot,
@@ -88,11 +89,13 @@ const ROUND_END_DURATION = 3;
 const SUDDEN_DEATH_INTERVAL = 3;
 const EMPTY_INPUT: Input = { turn: 0, move: 0, fire: false };
 
-export class TankRoom extends Room<{ state: TankRoomState }> {
+export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadata }> {
   private sim: SimState | null = null;
   private roundTimeoutSeconds = ROUND_TIMEOUT;
   private totalRodadas = ROUNDS;
   private permitirPartidaSoDeBots = false;
+  /** Contador de ids de bot da sala — nunca reaproveita id, nem depois de remover um. */
+  private proximoBot = 0;
 
   private lastInput = new Map<string, Input>();
   // Um cérebro por bot, recriado a cada rodada com semente derivada de (seed da rodada, slot):
@@ -134,12 +137,29 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
     this.totalRodadas = Math.min(ROUNDS, Math.max(1, Math.round(options.rodadas ?? ROUNDS)));
     this.permitirPartidaSoDeBots = options.permitirPartidaSoDeBots === true;
 
-    const botCount = Math.min(10, Math.max(0, Math.round(options.bots ?? 0)));
-    for (let i = 0; i < botCount; i++) this.addPlayer(`bot-${i}`, undefined, true);
+    const botCount = Math.min(VAGAS_POR_SALA, Math.max(0, Math.round(options.bots ?? 0)));
+    for (let i = 0; i < botCount; i++) this.adicionarBot();
 
     this.onMessage(MessageType.Ready, (client: Client, message: Partial<ReadyMsg> | undefined) => {
       const player = this.state.players.get(client.sessionId);
       if (player && !player.isBot) player.ready = message?.ready !== false;
+    });
+
+    // Fase 13 §3 — bots entram e saem PELO LOBBY, não só pela opção de criação da sala. Quem
+    // manda é o dono (o primeiro humano que entrou): para os outros o cliente nem desenha os
+    // botões, e o servidor recusa de novo aqui — o cliente nunca é a autoridade.
+    this.onMessage(MessageType.AddBot, (client: Client) => {
+      if (this.state.phase !== 'lobby') return;
+      if (this.state.ownerId !== client.sessionId) return;
+      if (this.state.players.size >= VAGAS_POR_SALA) return;
+      this.adicionarBot();
+      this.publicarSala();
+    });
+
+    this.onMessage(MessageType.RemoveBot, (client: Client) => {
+      if (this.state.phase !== 'lobby') return;
+      if (this.state.ownerId !== client.sessionId) return;
+      if (this.removerUmBot()) this.publicarSala();
     });
 
     // Fase 10 — escolha de cor. A UNICIDADE É DAQUI, não do cliente: as mensagens chegam
@@ -172,6 +192,7 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
       this.aspectBySession.set(client.sessionId, Math.min(MAZE_ASPECT_MAX, Math.max(MAZE_ASPECT_MIN, bruto)));
     });
 
+    this.publicarSala();
     this.setSimulationInterval((deltaMs) => this.update(deltaMs / 1000), 1000 / TICK_HZ);
   }
 
@@ -180,31 +201,59 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
     this.deviceIdBySession.set(client.sessionId, deviceId);
 
     const isMidMatch = this.state.phase !== 'lobby';
-    const isFull = this.state.players.size >= 10;
+    let isFull = this.state.players.size >= VAGAS_POR_SALA;
+
+    // Fase 13 §3 — HUMANO TEM PRIORIDADE SOBRE BOT: sala lotada de bots não pode barrar gente de
+    // verdade na porta. Um bot cede a vaga (e a cor) na hora. Com a partida em andamento não:
+    // aí a vaga é de quem está jogando, e quem chega assiste até a rodada acabar.
+    if (!isMidMatch && isFull && this.removerUmBot()) isFull = false;
 
     if (isMidMatch || isFull) {
       this.spectatorSessions.add(client.sessionId);
       if (options.nome?.trim()) this.pendingSpectatorNames.set(client.sessionId, options.nome.trim());
       if (typeof options.cor === 'number') this.pendingSpectatorColors.set(client.sessionId, options.cor);
+      this.publicarSala();
       return;
     }
 
     this.addPlayer(client.sessionId, options.nome, false, options.cor);
   }
 
-  async onLeave(client: Client, _code?: number): Promise<void> {
+  /**
+   * Chamado em DOIS momentos distintos (Fase 13 §1), e é o `code` que os separa:
+   *
+   *   · `CloseCode.CONSENTED` — a pessoa clicou em SAIR DA SALA no menu de pausa. Não há vaga a
+   *     guardar: o jogador sai do estado frio na hora, a cor volta para a paleta e o tanque some
+   *     da arena dos outros (antes ficava um fantasma parado até o fim da rodada);
+   *   · qualquer outro código — a conexão caiu, o `onDrop` já segurou a vaga por 30 s e ELES
+   *     acabaram de expirar. Mesmo destino, 30 s depois.
+   *
+   * Reconexão bem-sucedida nunca chega aqui: o Colyseus para o fluxo antes (`ClientState.
+   * RECONNECTED`), então a vaga segue de pé com `connected` voltando a `true` no `onReconnect`.
+   */
+  async onLeave(client: Client, code?: number): Promise<void> {
     const player = this.state.players.get(client.sessionId);
     if (player) player.connected = false;
-    this.spectatorSessions.delete(client.sessionId);
-    this.pendingSpectatorColors.delete(client.sessionId);
-    this.aspectBySession.delete(client.sessionId);
+
+    this.removerJogador(client.sessionId);
+    this.publicarSala();
+
+    // Sala sem nenhum humano não tem por que continuar viva: sem isto ela ficaria rodando uma
+    // partida de bots para plateia nenhuma até o processo morrer. Só desconecta se ainda houver
+    // cliente ligado — com a sala vazia o `autoDispose` do Colyseus já faz o serviço.
+    if (this.humanosNaSala() === 0 && this.clients.length > 0) {
+      void this.disconnect(CloseCode.CONSENTED).catch(() => undefined);
+    }
+    void code;
   }
 
   async onDrop(client: Client, _code?: number): Promise<void> {
+    const player = this.state.players.get(client.sessionId);
+    if (player) player.connected = false;
     try {
       await this.allowReconnection(client, 30);
     } catch {
-      // janela de 30 s expirou — o jogador fica desconectado definitivamente (fantasma)
+      // janela de 30 s expirou — `onLeave` roda em seguida e libera a vaga de vez
     }
   }
 
@@ -244,7 +293,7 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
   private nextFreeSlot(): number {
     const used = new Set<number>();
     this.state.players.forEach((p) => used.add(p.slot));
-    for (let slot = 0; slot < 10; slot++) {
+    for (let slot = 0; slot < VAGAS_POR_SALA; slot++) {
       if (!used.has(slot)) return slot;
     }
     return -1;
@@ -290,12 +339,100 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
 
     this.state.players.set(sessionId, player);
     this.spectatorSessions.delete(sessionId);
+    this.definirDono();
+    this.publicarSala();
+  }
+
+  /** Cria mais um bot na sala, com id próprio e a primeira cor livre. */
+  private adicionarBot(): void {
+    this.addPlayer(`bot-${this.proximoBot++}`, undefined, true);
+  }
+
+  /**
+   * Tira UM bot da sala — o do slot mais alto, isto é, o último que entrou. Devolve `false` se
+   * não havia nenhum. É por aqui que passam tanto o `− BOT` do lobby quanto a prioridade do
+   * humano que chega numa sala lotada de bots.
+   */
+  private removerUmBot(): boolean {
+    let alvo: PlayerState | undefined;
+    this.state.players.forEach((p) => {
+      if (p.isBot && (alvo === undefined || p.slot > alvo.slot)) alvo = p;
+    });
+    if (!alvo) return false;
+    this.removerJogador(alvo.id);
+    return true;
+  }
+
+  /**
+   * Apaga toda a pegada de um jogador (ou bot): estado frio, input pendente, cérebro de bot,
+   * reserva de espectador e — se a partida está rolando — o TANQUE dele na simulação.
+   *
+   * É a remoção do tanque que resolve o "tanque fantasma" da Fase 13 §1: até aqui quem saía no
+   * meio da rodada continuava de pé no meio da arena, servindo de obstáculo e de alvo. As balas
+   * que ele já tinha disparado continuam vivas de propósito — elas morrem sozinhas em ≤ 2,2 s, e
+   * apagá-las divergiria da previsão que cada cliente já está rodando.
+   */
+  private removerJogador(sessionId: string): void {
+    this.state.players.delete(sessionId);
+    this.lastInput.delete(sessionId);
+    this.botBrains.delete(sessionId);
+    this.matchStats.delete(sessionId);
+    this.deviceIdBySession.delete(sessionId);
+    this.aspectBySession.delete(sessionId);
+    this.spectatorSessions.delete(sessionId);
+    this.pendingSpectatorNames.delete(sessionId);
+    this.pendingSpectatorColors.delete(sessionId);
+    this.sim?.tanks.delete(sessionId);
+    this.definirDono();
+  }
+
+  /** Humanos com vaga na sala + quem está de espectador esperando a próxima rodada. */
+  private humanosNaSala(): number {
+    let humanos = 0;
+    this.state.players.forEach((p) => {
+      if (!p.isBot) humanos += 1;
+    });
+    return humanos + this.spectatorSessions.size;
+  }
+
+  /**
+   * O dono é o humano de menor slot — na prática o primeiro que entrou. Quando ele sai, o posto
+   * passa para o próximo em vez de a sala ficar sem ninguém no comando dos bots.
+   */
+  private definirDono(): void {
+    const atual = this.state.ownerId ? this.state.players.get(this.state.ownerId) : undefined;
+    if (atual && !atual.isBot) return;
+
+    let novo = '';
+    let menorSlot = Infinity;
+    this.state.players.forEach((p) => {
+      if (!p.isBot && p.slot < menorSlot) {
+        menorSlot = p.slot;
+        novo = p.id;
+      }
+    });
+    this.state.ownerId = novo;
+  }
+
+  /**
+   * Publica no `metadata` do matchMaker o que a tela de entrada precisa para listar esta sala
+   * (Fase 13 §2). Não é um registro paralelo de salas: é o mesmo cadastro que o `matchMaker.query`
+   * já percorre, e a listagem sai dele.
+   */
+  private publicarSala(): void {
+    let humanos = 0;
+    let bots = 0;
+    this.state.players.forEach((p) => {
+      if (p.isBot) bots += 1;
+      else humanos += 1;
+    });
+    void this.setMetadata({ codigo: this.roomId, humanos, bots, fase: this.state.phase }).catch(() => undefined);
   }
 
   /** Quem entrou como espectador (partida em andamento ou sala cheia) joga a partir da próxima rodada. */
   private promoteSpectators(): void {
     for (const sessionId of Array.from(this.spectatorSessions)) {
-      if (this.state.players.size >= 10) break;
+      if (this.state.players.size >= VAGAS_POR_SALA) break;
       this.addPlayer(sessionId, this.pendingSpectatorNames.get(sessionId), false, this.pendingSpectatorColors.get(sessionId));
       this.pendingSpectatorNames.delete(sessionId);
       this.pendingSpectatorColors.delete(sessionId);
@@ -395,6 +532,9 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
     this.state.aspect = aspect;
     this.state.timeLeft = COUNTDOWN;
     this.state.phase = 'countdown';
+    // A sala sai da lista de "abertas" no instante em que a partida começa e volta marcada como
+    // EM PARTIDA — quem clicar nela entra como espectador.
+    this.publicarSala();
 
     this.broadcast(MessageType.RoundStart, {
       round: this.state.round,
@@ -533,7 +673,7 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
     const brain = this.botBrains.get(tank.id);
     if (!brain) return EMPTY_INPUT;
 
-    return brain.think(tank, target, this.sim.maze, this.sim.tick);
+    return brain.think(tank, target, this.sim.maze, this.sim.tick, { bullets: this.sim.bullets });
   }
 
   private nearestEnemy(selfId: string): Vec2 | undefined {
@@ -679,6 +819,7 @@ export class TankRoom extends Room<{ state: TankRoomState }> {
 
   private async finishMatch(): Promise<void> {
     this.state.phase = 'gameover';
+    this.publicarSala();
 
     const players = Array.from(this.state.players.values());
     const finalRanking = [...players]

@@ -497,7 +497,7 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
           p.aliveSeconds += dt;
           if (p.isBot && p.bot) {
             const target = nearestAliveTarget(tank, state.tanks, state.maze);
-            inputs.set(p.id, p.bot.think(tank, target, state.maze, state.tick));
+            inputs.set(p.id, p.bot.think(tank, target, state.maze, state.tick, { bullets: state.bullets }));
           } else if (!p.isBot) {
             const meu = controls.read(tank);
             ultimoAim = meu.aim;

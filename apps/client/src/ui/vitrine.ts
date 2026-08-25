@@ -118,7 +118,12 @@ export class Vitrine {
     for (const piloto of this.pilotos) {
       const tank = this.state.tanks.get(piloto.id)!;
       if (!tank.alive) continue;
-      inputs.set(piloto.id, piloto.bot.think(tank, alvoMaisProximo(tank, this.state.tanks, this.state.maze), this.state.maze, this.state.tick));
+      inputs.set(
+        piloto.id,
+        piloto.bot.think(tank, alvoMaisProximo(tank, this.state.tanks, this.state.maze), this.state.maze, this.state.tick, {
+          bullets: this.state.bullets,
+        }),
+      );
     }
 
     for (const ev of step(this.state, inputs, DT)) {

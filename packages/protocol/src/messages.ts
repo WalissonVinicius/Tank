@@ -7,6 +7,8 @@ export const MessageType = {
   Input: 'input',
   Ready: 'ready',
   PickColor: 'pick_color',
+  AddBot: 'add_bot',
+  RemoveBot: 'remove_bot',
   Viewport: 'viewport',
   Snapshot: 'snapshot',
   BulletSpawn: 'bullet_spawn',
@@ -90,6 +92,16 @@ export interface PickColorMsg {
   /** Cor pedida, em 0xRRGGBB. Tem que ser uma das de `PLAYER_COLORS`. */
   color: number;
 }
+
+/**
+ * Canais `add_bot` / `remove_bot` (Fase 13 §3): o DONO da sala coloca e tira bots enquanto
+ * ninguém começou. Não levam corpo — a quantidade é sempre ±1, e quem conta as vagas (e recusa
+ * o pedido de quem não é dono, ou que chega com a partida rolando) é o `TankRoom`.
+ *
+ * Bot ocupa vaga e cor como qualquer jogador; a unicidade de cor continua sendo do servidor. E
+ * humano tem prioridade: se alguém entra com a sala cheia de bots, um bot sai para dar lugar.
+ */
+export type BotLobbyMsg = undefined;
 
 /**
  * Canal `viewport`: cada cliente informa a proporção (largura/altura) da própria ÁREA JOGÁVEL.

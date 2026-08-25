@@ -15,5 +15,11 @@ export class TankRoomState extends Schema {
    */
   @type('number') aspect: number = 0;
   @type('number') timeLeft: number = 0;
+  /**
+   * DONO da sala (Fase 13 §3): o primeiro humano que entrou, e quem herdar o posto quando ele
+   * sair. É só ele que coloca e tira bots no lobby — para os outros os botões nem aparecem, e o
+   * servidor recusa o pedido de qualquer jeito. Vazio numa sala sem humano nenhum.
+   */
+  @type('string') ownerId: string = '';
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }
