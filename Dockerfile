@@ -8,9 +8,9 @@
 # `unofficial-builds.nodejs.org` — o único host que serve headers musl e o mais frágil da
 # cadeia, sem CDN. O build morria ali com `read ETIMEDOUT`.
 #
-# Com glibc o prebuild casa e nada é compilado. python3/make/g++ ficam só como rede de
-# segurança: se algum dia o prebuild faltar, o node-gyp compila buscando os headers no
-# nodejs.org oficial.
+# Com glibc os headers vêm do nodejs.org oficial, que tem CDN, e o download passa. A
+# compilação em si CONTINUA acontecendo (o prebuild não é aplicado aqui) — por isso
+# python3/make/g++ são obrigatórios, não rede de segurança. Custa ~2 min de build.
 FROM node:24-slim AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
@@ -26,11 +26,14 @@ RUN pnpm build
 # Remove as devDependencies (typescript, vite, tsup, tsx, vitest...) do node_modules antes de
 # copiar para o stage final — mantém a imagem de produção enxuta.
 #
-# O `confirm-modules-purge false` NÃO é opcional aqui: para podar, o pnpm precisa apagar o
-# node_modules e pede confirmação interativa antes. Dentro do Docker não existe TTY, então ele
-# aborta com ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY e derruba o build inteiro na última
-# linha do estágio — depois de já ter instalado tudo e compilado o better-sqlite3.
-RUN pnpm config set confirm-modules-purge false && pnpm prune --prod
+# `CI=true` NÃO é opcional: para podar, o pnpm precisa apagar o node_modules e pede
+# confirmação interativa antes. Sem TTY (caso do Docker) ele aborta com
+# ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY e derruba o build na última linha do estágio,
+# depois de já ter instalado tudo e compilado o better-sqlite3.
+#
+# `pnpm config set confirm-modules-purge false` NÃO resolve — testado, o pnpm 10 ignora.
+# A própria mensagem de erro aponta a saída: definir CI=true.
+RUN CI=true pnpm prune --prod
 
 # ---------- Stage 2: runtime ----------
 FROM node:24-slim AS runtime
