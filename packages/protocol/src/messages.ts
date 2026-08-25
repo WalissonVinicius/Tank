@@ -9,6 +9,8 @@ export const MessageType = {
   PickColor: 'pick_color',
   AddBot: 'add_bot',
   RemoveBot: 'remove_bot',
+  Rematch: 'rematch',
+  Config: 'config',
   Viewport: 'viewport',
   Snapshot: 'snapshot',
   BulletSpawn: 'bullet_spawn',
@@ -102,6 +104,31 @@ export interface PickColorMsg {
  * humano tem prioridade: se alguém entra com a sala cheia de bots, um bot sai para dar lugar.
  */
 export type BotLobbyMsg = undefined;
+
+/**
+ * Canal `rematch` (revanche): no fim da partida a sala VOLTA para o lobby em vez de morrer.
+ *
+ * Antes, "jogar de novo" recarregava a página e devolvia a pessoa à tela de entrada — o grupo
+ * tinha que criar sala nova e redistribuir o código a cada partida, o que inviabiliza jogar
+ * várias seguidas no escritório. Agora o placar zera, todo mundo volta a "não pronto" e a sala
+ * segue viva com as mesmas pessoas, o mesmo código e o mesmo link.
+ *
+ * Não leva corpo: só vale em `gameover`, e QUALQUER pessoa da sala pode pedir (esperar o dono
+ * travaria a revanche se ele fechasse a aba).
+ */
+export type RematchMsg = undefined;
+
+/**
+ * Canal `config`: o DONO ajusta o número de rodadas e a dificuldade dos bots no lobby.
+ *
+ * Ficava só na URL de criação (`rodadas`) e a dificuldade era fixa em `medio` — nem o bot
+ * difícil que existe no código chegava a ser usado numa partida online. Campos opcionais: manda
+ * só o que mudou.
+ */
+export interface ConfigMsg {
+  rodadas?: number;
+  dificuldade?: 'facil' | 'medio' | 'dificil';
+}
 
 /**
  * Canal `viewport`: cada cliente informa a proporção (largura/altura) da própria ÁREA JOGÁVEL.

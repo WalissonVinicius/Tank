@@ -48,6 +48,7 @@ import {
   renderLobby,
   renderSalasAbertas,
   setLobbyBotHandler,
+  setLobbyConfigHandler,
   setLobbyCorHandler,
   setLobbyDigitouHandler,
   focarCampoNome,
@@ -725,6 +726,9 @@ interface ServerRoomState {
   timeLeft: number;
   /** Dono da sala — o único que pode colocar e tirar bots no lobby (Fase 13 §3). */
   ownerId: string;
+  /** Configuração da partida escolhida pelo dono: todo mundo lê, só ele muda. */
+  totalRounds: number;
+  dificuldade: string;
   players: Iterable<[string, ServerPlayerState]>;
 }
 
@@ -795,6 +799,9 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   let timeLeft = 0;
   let seedAtual = -1;
   let ownerId = '';
+  // Configuração da partida, vinda do estado frio — quem entrou por código não montou a sala.
+  let totalRoundsSala = ROUNDS;
+  let dificuldadeSala: 'facil' | 'medio' | 'dificil' = 'medio';
   let reconnecting = false;
   let vencedorRodada: string | null = null;
   let titulosFinais: Titulo[] = [];
@@ -899,11 +906,36 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         vitrine.parar();
         vitrine = null;
       }
+      // REVANCHE: o servidor devolveu a sala ao lobby. Antes isto era impossível (a sala morria
+      // em `gameover` e "jogar de novo" recarregava a página), e era a RECARGA que garantia que
+      // nada da partida anterior sobrava. Sem ela, o reset precisa ser explícito — o que não for
+      // limpo aqui aparece na partida nova: placar velho no fim de rodada, zoeira de mortes que
+      // já aconteceram, killfeed de outra partida, labirinto que não é redesenhado.
+      if (faseAnterior === 'gameover' && s.phase === 'lobby') {
+        resetRoundend();
+        resetResult();
+        resetKillfeed();
+        destaquesPartida.length = 0;
+        destaquesRodada = [];
+        entradasRodada = [];
+        scoreInicioRodada.clear();
+        titulosFinais = [];
+        vencedorRodada = null;
+        // Força a reconstrução do labirinto na primeira rodada nova: sem zerar a seed, uma
+        // revanche que sorteasse a MESMA seed da rodada anterior não redesenharia o mapa e os
+        // decalques de tiro e as crateras da partida passada continuariam na parede.
+        maze = null;
+        seedAtual = -1;
+        bulletPredictor = null;
+        donosDeBala.clear();
+      }
       faseAnterior = s.phase;
       fase = s.phase;
       round = s.round;
       timeLeft = s.timeLeft;
       ownerId = s.ownerId ?? '';
+      totalRoundsSala = s.totalRounds || ROUNDS;
+      dificuldadeSala = (s.dificuldade as 'facil' | 'medio' | 'dificil') || 'medio';
 
       // Rede de segurança para quem entra com a partida já em andamento e nunca recebeu o
       // `round_start` daquela rodada: reconstrói o labirinto pela seed do estado frio.
@@ -1049,10 +1081,12 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     try { sessionStorage.setItem('tank:voltou', '1'); } catch { /* modo privado */ }
     location.assign(location.pathname);
   };
-  setResultReplayHandler(voltarParaEntrada);
-  // Online não há segunda saída: "jogar de novo" JÁ é voltar para a tela de entrada. Dois botões
-  // com o mesmo destino só criariam dúvida.
-  setResultVoltarHandler(null);
+  // "JOGAR NOVAMENTE" agora é REVANCHE de verdade: a sala continua viva com as mesmas pessoas,
+  // o mesmo código e o mesmo link. Antes recarregava a página e devolvia todo mundo à tela de
+  // entrada, o que obrigava o grupo a criar sala nova e redistribuir o código a cada partida.
+  setResultReplayHandler(() => net.sendRematch());
+  // A segunda saída passa a existir e a fazer sentido: quem não quer a revanche sai da sala.
+  setResultVoltarHandler(voltarParaEntrada);
 
   /**
    * SAIR DA SALA (Fase 13 §1). O `net.sair()` ESPERA o servidor confirmar antes da recarga: é
@@ -1111,6 +1145,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   // `+ BOT` / `− BOT` do lobby. O cliente só PEDE: quem confere que o pedido veio do dono, que a
   // sala ainda está no lobby e que há vaga é o servidor.
   setLobbyBotHandler((delta) => net.sendBot(delta));
+  setLobbyConfigHandler((cfg) => net.sendConfig(cfg));
 
   async function conectar(acao: AcaoEntrada, nomeInformado: string, codigo: string): Promise<void> {
     if (conectando) return;
@@ -1321,6 +1356,8 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         aviso: lobbyPlayers.length < 2 ? 'ESPERANDO MAIS UM JOGADOR' : 'TODOS PRONTOS = COMEÇA',
         avisoCor: corNegada ? 'aquela já era de outro' : '',
         souDono: ownerId !== '' && ownerId === meId,
+        totalRounds: totalRoundsSala,
+        dificuldade: dificuldadeSala,
       });
       setTela(telas, 'lobby');
     } else if (fase === 'countdown' || fase === 'playing') {
@@ -1363,6 +1400,8 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         meId,
         destaques: melhoresDestaques(destaquesPartida, 3),
         rotuloReplay: 'JOGAR DE NOVO',
+        // A revanche mantém a sala viva, então passou a existir uma segunda saída de verdade.
+        rotuloVoltar: 'SAIR DA SALA',
       });
       setTela(telas, 'result');
     }

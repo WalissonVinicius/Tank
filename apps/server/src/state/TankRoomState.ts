@@ -21,5 +21,12 @@ export class TankRoomState extends Schema {
    * servidor recusa o pedido de qualquer jeito. Vazio numa sala sem humano nenhum.
    */
   @type('string') ownerId: string = '';
+  /**
+   * Configuração da partida, escolhida pelo dono no lobby. Vive no estado FRIO porque TODO mundo
+   * precisa ver: quem entra por código não montou a sala e não teria como saber quantas rodadas
+   * vai jogar nem contra que nível de bot.
+   */
+  @type('uint8') totalRounds: number = 10;
+  @type('string') dificuldade: string = 'medio';
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
 }

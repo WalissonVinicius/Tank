@@ -35,6 +35,9 @@ export interface LobbyState {
    * quem decide de verdade é o servidor, que recusa o pedido de qualquer outro (Fase 13 §3).
    */
   souDono?: boolean;
+  /** Configuração da partida — vem do estado frio, então todo mundo enxerga a mesma coisa. */
+  totalRounds?: number;
+  dificuldade?: 'facil' | 'medio' | 'dificil';
 }
 
 /** Estado do bloco SALAS ABERTAS da tela de entrada (Fase 13 §2). */
@@ -58,6 +61,16 @@ export type AcaoEntrada = 'criar' | 'entrar';
 /** Opções do seletor de bots do treino (Fase 12 §7). O padrão é o do meio. */
 export const TREINO_BOTS = [3, 6, 9] as const;
 const TREINO_BOTS_PADRAO = 6;
+
+/** Rodadas oferecidas no lobby. 10 continua sendo o padrão; 3 e 5 são para partida rápida. */
+const OPCOES_RODADAS = [3, 5, 10] as const;
+
+/** Níveis de bot. Os rótulos são do jogador; os valores são os do `BOT_DIFFICULTY`. */
+const OPCOES_DIFICULDADE = [
+  ['facil', 'FÁCIL'],
+  ['medio', 'MÉDIO'],
+  ['dificil', 'DIFÍCIL'],
+] as const;
 
 /** Vagas desenhadas na grade — a sala comporta 10 (uma cor de jogador para cada). */
 const VAGAS = PLAYER_COLORS.length;
@@ -84,6 +97,9 @@ let els: {
   cores: HTMLElement;
   avisoCor: HTMLElement;
   listaSalas: HTMLElement;
+  config: HTMLElement;
+  rodadas: HTMLElement;
+  dificuldade: HTMLElement;
   controleBots: HTMLElement;
   contadorBots: HTMLElement;
 } | null = null;
@@ -105,6 +121,7 @@ let ultimoStatus = '';
 let ultimoAvisoCor = '';
 let ultimaChaveSalas = '';
 let ultimaChaveBots = '';
+let ultimaChaveConfig = '';
 
 function css(color: number): string {
   return '#' + (color >>> 0).toString(16).padStart(6, '0');
@@ -203,6 +220,18 @@ function ensureBuilt(root: HTMLElement): void {
           </span>
         </div>
         <div id="lobby-vagas"></div>
+        <!-- Configuração da partida. Só o dono ajusta; todo mundo VÊ, porque quem entrou por
+             código não montou a sala e precisa saber o que vai jogar. -->
+        <div class="config-partida" id="lobby-config">
+          <div class="linha-config">
+            <span class="rot">RODADAS</span>
+            <span class="opcoes" id="lobby-rodadas"></span>
+          </div>
+          <div class="linha-config">
+            <span class="rot">BOTS</span>
+            <span class="opcoes" id="lobby-dificuldade"></span>
+          </div>
+        </div>
         <div class="rodape-sala">
           <button id="btn-pronto" type="button" class="botao-jogo grande">ESTOU PRONTO</button>
           <div id="lobby-status"></div>
@@ -232,12 +261,22 @@ function ensureBuilt(root: HTMLElement): void {
     cores: root.querySelector('#lobby-cores')!,
     avisoCor: root.querySelector('#lobby-aviso-cor')!,
     listaSalas: root.querySelector('#lobby-lista-salas')!,
+    config: root.querySelector('#lobby-config')!,
+    rodadas: root.querySelector('#lobby-rodadas')!,
+    dificuldade: root.querySelector('#lobby-dificuldade')!,
     controleBots: root.querySelector('#lobby-controle-bots')!,
     contadorBots: root.querySelector('#lobby-bots-n')!,
   };
 
   // Delegação nas duas listas que são redesenhadas: prender ouvinte por linha vazaria um a cada
   // atualização (a de salas se refaz a cada 3 s).
+  els.config.addEventListener('click', (ev) => {
+    const alvo = (ev.target as HTMLElement).closest<HTMLButtonElement>('button[data-rodadas],button[data-dif]');
+    if (!alvo || alvo.disabled) return;
+    if (alvo.dataset.rodadas) configHandler?.({ rodadas: Number(alvo.dataset.rodadas) });
+    else if (alvo.dataset.dif) configHandler?.({ dificuldade: alvo.dataset.dif as 'facil' | 'medio' | 'dificil' });
+  });
+
   els.listaSalas.addEventListener('click', (ev) => {
     const alvo = (ev.target as HTMLElement).closest<HTMLElement>('.sala');
     if (!alvo?.dataset.codigo) return;
@@ -410,6 +449,15 @@ export function setLobbySalaHandler(handler: (codigo: string) => void): void {
 }
 
 /** Clique em `+ BOT` / `− BOT` no lobby da sala. Só o dono vê os botões; o servidor confere de novo. */
+let configHandler: ((cfg: { rodadas?: number; dificuldade?: 'facil' | 'medio' | 'dificil' }) => void) | null = null;
+
+/** Rodadas e dificuldade dos bots — o servidor recusa de quem não é dono. */
+export function setLobbyConfigHandler(
+  handler: (cfg: { rodadas?: number; dificuldade?: 'facil' | 'medio' | 'dificil' }) => void,
+): void {
+  configHandler = handler;
+}
+
 export function setLobbyBotHandler(handler: (delta: 1 | -1) => void): void {
   onMexerBots = handler;
 }
@@ -548,6 +596,28 @@ export function renderLobby(root: HTMLElement, state: LobbyState): void {
     const mais = els.controleBots.querySelector<HTMLButtonElement>('.bot-mais');
     if (menos) menos.disabled = meusBots === 0;
     if (mais) mais.disabled = state.players.length >= VAGAS_POR_SALA;
+  }
+
+  // Configuração da partida. Redesenhada só quando muda de verdade — os botões vivem dentro do
+  // lobby, que é renderizado a cada frame, e recriar o HTML sempre mataria o `:active` do clique.
+  const temBot = state.players.some((p) => p.isBot);
+  const chaveConfig = `${state.souDono ? 1 : 0}:${state.totalRounds ?? 10}:${state.dificuldade ?? 'medio'}:${temBot ? 1 : 0}`;
+  if (chaveConfig !== ultimaChaveConfig) {
+    ultimaChaveConfig = chaveConfig;
+    const dono = state.souDono === true;
+    const rodadasAtual = state.totalRounds ?? 10;
+    els.rodadas.innerHTML = OPCOES_RODADAS.map(
+      (n) =>
+        `<button type="button" data-rodadas="${n}" class="op${n === rodadasAtual ? ' sel' : ''}"${dono ? '' : ' disabled'}>${n}</button>`,
+    ).join('');
+    const difAtual = state.dificuldade ?? 'medio';
+    // A dificuldade só faz sentido com bot na sala — sem nenhum, o seletor apareceria mandando
+    // numa coisa que não existe.
+    els.dificuldade.innerHTML = OPCOES_DIFICULDADE.map(
+      ([valor, rotulo]) =>
+        `<button type="button" data-dif="${valor}" class="op${valor === difAtual ? ' sel' : ''}"${dono && temBot ? '' : ' disabled'}>${rotulo}</button>`,
+    ).join('');
+    els.config.classList.toggle('sem-bot', !temBot);
   }
 
   const chave = state.players.map((p) => `${p.id}:${p.name}:${p.color}:${p.ready ? 1 : 0}:${p.isBot ? 1 : 0}`).join('|') + `#${state.meId}`;

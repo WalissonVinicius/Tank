@@ -252,6 +252,16 @@ export class NetClient {
     this.room?.send(delta > 0 ? MessageType.AddBot : MessageType.RemoveBot);
   }
 
+  /** Pede revanche: a sala volta ao lobby com as mesmas pessoas, o mesmo código e o mesmo link. */
+  sendRematch(): void {
+    this.room?.send(MessageType.Rematch);
+  }
+
+  /** Só o dono da sala; o servidor recusa de qualquer outro. */
+  sendConfig(cfg: { rodadas?: number; dificuldade?: 'facil' | 'medio' | 'dificil' }): void {
+    this.room?.send(MessageType.Config, cfg);
+  }
+
   leave(): void {
     this.saindoDeProposito = true;
     clearReconnect();

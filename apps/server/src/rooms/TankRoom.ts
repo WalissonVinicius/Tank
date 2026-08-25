@@ -15,7 +15,7 @@ import {
   TICK_HZ,
   VAGAS_POR_SALA,
 } from '@tank/protocol';
-import type { InputBitsMsg, PickColorMsg, ReadyMsg, SalaMetadata, ViewportMsg } from '@tank/protocol';
+import type { ConfigMsg, InputBitsMsg, PickColorMsg, ReadyMsg, SalaMetadata, ViewportMsg } from '@tank/protocol';
 import {
   BOT_DIFFICULTY,
   makeBot,
@@ -95,6 +95,8 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
   private sim: SimState | null = null;
   private roundTimeoutSeconds = ROUND_TIMEOUT;
   private totalRodadas = ROUNDS;
+  /** Dificuldade dos bots desta sala (Config). Era fixa em `medio`. */
+  private botDificuldade: 'facil' | 'medio' | 'dificil' = 'medio';
   private permitirPartidaSoDeBots = false;
   /** Contador de ids de bot da sala — nunca reaproveita id, nem depois de remover um. */
   private proximoBot = 0;
@@ -137,6 +139,7 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     this.state = new TankRoomState();
     this.roundTimeoutSeconds = options.roundTimeoutSeconds ?? ROUND_TIMEOUT;
     this.totalRodadas = Math.min(ROUNDS, Math.max(1, Math.round(options.rodadas ?? ROUNDS)));
+    this.state.totalRounds = this.totalRodadas;
     this.permitirPartidaSoDeBots = options.permitirPartidaSoDeBots === true;
 
     const botCount = Math.min(VAGAS_POR_SALA, Math.max(0, Math.round(options.bots ?? 0)));
@@ -162,6 +165,45 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
       if (this.state.phase !== 'lobby') return;
       if (this.state.ownerId !== client.sessionId) return;
       if (this.removerUmBot()) this.publicarSala();
+    });
+
+    /**
+     * REVANCHE. A sala volta ao lobby em vez de morrer com a partida.
+     *
+     * Antes o "jogar de novo" do cliente era uma RECARGA que devolvia a pessoa à tela de entrada:
+     * para jogar de novo com o mesmo grupo era preciso criar sala nova e redistribuir o código.
+     * Agora o placar zera, todo mundo volta a "não pronto" e o mesmo link continua valendo.
+     *
+     * Qualquer pessoa da sala pode pedir, não só o dono: se o dono fecha a aba depois da última
+     * rodada, exigir que fosse ele deixaria a sala presa em `gameover` para sempre.
+     */
+    this.onMessage(MessageType.Rematch, (client: Client) => {
+      if (this.state.phase !== 'gameover') return;
+      if (!this.state.players.has(client.sessionId)) return;
+      this.reiniciarParaLobby();
+    });
+
+    /**
+     * Rodadas e dificuldade dos bots, ajustadas pelo DONO no lobby.
+     *
+     * A dificuldade estava fixa em `medio` no código — nem o bot difícil chegava a ser usado
+     * numa partida online. As rodadas só existiam como opção de criação da sala, então quem
+     * entrava por código não tinha como saber nem mudar.
+     */
+    this.onMessage(MessageType.Config, (client: Client, message: Partial<ConfigMsg> | undefined) => {
+      if (this.state.phase !== 'lobby') return;
+      if (this.state.ownerId !== client.sessionId) return;
+      const r = Number(message?.rodadas);
+      if (Number.isFinite(r)) {
+        this.totalRodadas = Math.min(ROUNDS, Math.max(1, Math.round(r)));
+        this.state.totalRounds = this.totalRodadas;
+      }
+      const d = message?.dificuldade;
+      if (d === 'facil' || d === 'medio' || d === 'dificil') {
+        this.botDificuldade = d;
+        this.state.dificuldade = d;
+      }
+      this.publicarSala();
     });
 
     // Fase 10 — escolha de cor. A UNICIDADE É DAQUI, não do cliente: as mensagens chegam
@@ -532,7 +574,7 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
       const player = this.state.players.get(id);
       if (player) player.alive = true;
       if (player?.isBot) {
-        this.botBrains.set(id, makeBot(mulberry32(seed + player.slot * 7919 + 1), BOT_DIFFICULTY.medio));
+        this.botBrains.set(id, makeBot(mulberry32(seed + player.slot * 7919 + 1), BOT_DIFFICULTY[this.botDificuldade]));
       }
     });
 
@@ -831,6 +873,37 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     this.sim = null;
 
     this.broadcast(MessageType.RoundEnd, { round: this.state.round, ranking });
+  }
+
+  /**
+   * Volta de `gameover` para o lobby mantendo a sala, o código e as pessoas (revanche).
+   *
+   * Zera tudo que é DA PARTIDA e preserva o que é DA PESSOA: nome, cor e a condição de dono
+   * continuam; placar, abates, mortes, autogols e as estatísticas de título recomeçam. Bots
+   * voltam prontos (é o estado natural deles) e humanos voltam a "não pronto", senão a revanche
+   * começaria sozinha antes de todo mundo perceber que voltou ao lobby.
+   *
+   * `matchId` é limpo para que a próxima partida entre no ranking como uma partida NOVA, e não
+   * some pontuação na anterior.
+   */
+  private reiniciarParaLobby(): void {
+    for (const player of this.state.players.values()) {
+      player.score = 0;
+      player.kills = 0;
+      player.deaths = 0;
+      player.selfKills = 0;
+      player.alive = false;
+      player.ready = player.isBot;
+    }
+    this.matchStats.clear();
+    this.matchId = '';
+    this.state.round = 0;
+    this.state.timeLeft = 0;
+    this.state.phase = 'lobby';
+    this.sim = null;
+    this.botBrains.clear();
+    this.publicarSala();
+    this.broadcast(MessageType.Rematch, undefined);
   }
 
   private async finishMatch(): Promise<void> {

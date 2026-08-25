@@ -2967,3 +2967,61 @@ body.em-jogo #btn-tela-cheia {
   color: rgba(234, 240, 255, 0.28);
   cursor: default;
 }
+
+
+/* Configuração da partida no lobby (rodadas + dificuldade dos bots). Só o dono clica; os
+   outros veem os mesmos botões desabilitados, porque saber o que vai ser jogado é de todos. */
+#lobby-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+#lobby-config .linha-config {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#lobby-config .rot {
+  font-family: var(--fd);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  color: var(--amarelo);
+  min-width: 62px;
+}
+
+#lobby-config .opcoes {
+  display: flex;
+  gap: 6px;
+}
+
+#lobby-config .op {
+  font-family: var(--fd);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 5px 11px;
+  color: var(--texto);
+  background: var(--painel-3);
+  border: var(--b) solid var(--traco);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+#lobby-config .op:hover:not(:disabled) { background: var(--painel-2); }
+
+#lobby-config .op.sel {
+  background: var(--amarelo);
+  border-color: var(--amarelo);
+  color: #1a1300;
+}
+
+/* Desabilitado não some: quem não é dono precisa LER a configuração da partida. */
+#lobby-config .op:disabled { cursor: default; opacity: 0.55; }
+
+/* Sem bot na sala a dificuldade não manda em nada — a linha inteira recua. */
+#lobby-config.sem-bot .linha-config:last-child { opacity: 0.4; }
