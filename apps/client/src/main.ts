@@ -32,6 +32,7 @@ import { BulletPredictor } from './net/bullets.js';
 import { NetClient } from './net/client.js';
 import { InterpolationBuffer } from './net/interpolation.js';
 import type { SnapshotTank } from './net/snapshot.js';
+import { prepararEmblemas } from './render/animais.js';
 import { renderCountdown, resetCountdown } from './ui/countdown.js';
 import { iniciarTelaCheia } from './ui/fullscreen.js';
 import { pushKillfeed, renderHud, resetKillfeed, type HudState } from './ui/hud.js';
@@ -269,6 +270,8 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
 
   const players: MatchPlayer[] = Array.from({ length: total }, (_, i) => novoJogador(i));
   const playersById = new Map(players.map((p) => [p.id, p]));
+  // Codifica os emblemas agora, com a partida ainda montando — não no frame do primeiro abate.
+  prepararEmblemas(players.map((p) => p.color));
   // Dono de cada bala em voo. O evento de estouro traz só o id da bala, e a essa altura ela já
   // saiu de `state.bullets` — sem este registro a explosão não teria de que cor ser.
   const bulletOwners = new Map<string, string>();
@@ -894,6 +897,9 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       const s = raw as ServerRoomState;
       playersById = new Map(s.players);
       slotToId = new Map([...playersById.values()].map((p) => [p.slot, p.id]));
+      // Ainda no lobby, e a cada entrada nova, os emblemas de quem está na sala já ficam prontos:
+      // a codificação PNG deles não pode cair no frame do abate (ver `prepararEmblemas`).
+      prepararEmblemas([...playersById.values()].map((p) => p.color));
       // A largada da rodada é a transição countdown→playing do estado frio: é o mesmo instante em
       // que o servidor liberou o `step()`, então o "VAI!" aparece exatamente quando o jogo começa.
       if (faseAnterior === 'countdown' && s.phase === 'playing') vaiAte = performance.now() + VAI_MS;

@@ -664,6 +664,29 @@ export function urlDoAnimal(cor: number): string {
   return url;
 }
 
+/**
+ * Paga ADIANTADO o desenho e a codificação PNG dos emblemas das cores em jogo.
+ *
+ * `urlDoAnimal` já é cacheado por (animal, cor), mas o cache nasce vazio: a PRIMEIRA vez que uma
+ * cor aparece no killfeed, o `toDataURL('image/png')` codifica um bitmap de 128×128 de forma
+ * SÍNCRONA na thread principal — e essa primeira vez é, por construção, o frame de um abate, que
+ * é o frame mais cheio do jogo (explosão, shockwave, hitstop, RGB split).
+ *
+ * Medido com `HTMLCanvasElement.prototype.toDataURL` instrumentado, 6 bots, 20 s: sem este
+ * preparo são 6 codificações somando 111 ms, TODAS entre 7,4 s e 9,4 s de jogo, as duas piores
+ * de 39,8 ms e 33,2 ms — dois frames de abate transformados em travadas de 2 a 2,5 frames.
+ * Com ele, as mesmas 6 codificações saem em 57 ms entre 0,57 s e 0,63 s, antes da primeira
+ * rodada, e nenhuma sobra para o tempo de jogo. Mesma ideia do `PostFX.prewarm`.
+ *
+ * Idempotente: repetir a chamada não refaz nada, porque os dois caches já respondem.
+ */
+export function prepararEmblemas(cores: Iterable<number>): void {
+  for (const cor of cores) {
+    texturaDoAnimal(cor);
+    urlDoAnimal(cor);
+  }
+}
+
 /** Nome do animal da cor, já capitalizado para a interface. */
 export function nomeDoAnimal(cor: number): string {
   return ANIMAL_NOME[animalDaCor(cor)];
