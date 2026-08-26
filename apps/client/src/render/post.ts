@@ -13,6 +13,35 @@ const RGB_SPLIT_S = 0.1;
 const SHOCKWAVE_DURATION_S = 0.7;
 const SHOCKWAVE_AMPLITUDE = 15;
 
+// ---------------------------------------------------------------------------------------------
+// O MUNDO PERDE A COR QUANDO VOCÊ MORRE (V2 §3)
+//
+// Eliminado, o jogador vira espectador — e a cena precisa dizer isso sem uma palavra. O efeito
+// sai de GRAÇA: o `AdjustmentFilter` já está permanentemente na cadeia, então animar a saturação
+// dele para perto de zero não acrescenta NENHUM passe de tela cheia e não encosta no teto de 3
+// filtros do CLAUDE.md. Nenhum filtro novo entra aqui por causa disto.
+//
+// O HUD não é afetado por construção: os filtros vivem no container do MUNDO e o HUD é DOM por
+// cima do canvas — munição, relógio e o cartão de ELIMINADO continuam coloridos.
+// ---------------------------------------------------------------------------------------------
+
+/** Saturação de regime — o mundo vivo. */
+const SAT_VIVA = 1.08;
+/**
+ * Saturação de espectador. Não é zero absoluto de propósito: um resto mínimo de cor mantém a
+ * diferença entre a bala incandescente e o piso, e quem morreu continua ACOMPANHANDO a rodada.
+ */
+const SAT_CINZA = 0.07;
+const CONTRASTE_VIVO = 1.04;
+/** Cinza puro achata a cena; um passo a mais de contraste devolve a leitura de volume. */
+const CONTRASTE_CINZA = 1.14;
+/**
+ * Constante de tempo da drenagem de cor. τ = 0,11 s dá ~330 ms até o cinza — dentro da faixa de
+ * 250–500 ms da especificação: rápido o bastante para pertencer ao instante da morte, lento o
+ * bastante para o olho VER a cor indo embora em vez de levar um corte seco.
+ */
+const CINZA_TAU_S = 0.11;
+
 /**
  * Qualidade do pós-processamento (Fase 8 §2).
  *
@@ -93,6 +122,10 @@ export class PostFX {
   private shockwaveActive = false;
   private shockwaveTimeS = 0;
   private rgbSplitLeftS = 0;
+  /** Alvo da drenagem de cor: `true` enquanto o jogador local está eliminado. */
+  private cinza = false;
+  /** 0 = mundo colorido, 1 = mundo cinza. Interpolado em tempo REAL (ver `atualizarCor`). */
+  private drenagem = 0;
   private timeSec = 0;
   private listaCache: Filter[] | null = null;
   private composicaoAtual = -1;
@@ -100,7 +133,7 @@ export class PostFX {
   private qualidade: Qualidade = { nivel: 'alto', resolucao: 1 };
 
   constructor() {
-    this.adjust = new AdjustmentFilter({ saturation: 1.08, contrast: 1.04 });
+    this.adjust = new AdjustmentFilter({ saturation: SAT_VIVA, contrast: CONTRASTE_VIVO });
     // Mundo claro pesa MUITO mais no bloom: com threshold baixo, o piso inteiro entrava no filtro
     // e a tela estourava. Só o que é realmente incandescente (núcleo da bala, clarão, explosão)
     // fica acima de 0,88 — o resto passa limpo.
@@ -175,6 +208,33 @@ export class PostFX {
   /** ~100ms de aberração cromática — só na morte do próprio jogador local (autogol incluso). */
   triggerSelfDeathGlitch(): void {
     this.rgbSplitLeftS = RGB_SPLIT_S;
+  }
+
+  /**
+   * Liga/desliga o mundo cinza (V2 §3). Idempotente: quem chama pode repetir o mesmo valor todo
+   * frame — é exatamente o que o `Renderer.sync()` faz, já que ele deriva o estado do `alive` do
+   * meu tanque em vez de guardar um sinal próprio.
+   */
+  setMundoCinza(cinza: boolean): void {
+    this.cinza = cinza;
+  }
+
+  /**
+   * Avança a drenagem de cor. Recebe `dt` de tempo REAL, não o do hitstop: a morte dispara 60 ms
+   * de congelamento e, com o relógio do mundo, a cor ficaria parada justamente no instante em que
+   * ela precisa começar a sair.
+   *
+   * Sai cedo quando já chegou no alvo — no regime normal do jogo isto é uma comparação por frame
+   * e o filtro nem chega a ser tocado.
+   */
+  atualizarCor(dtRealS: number): void {
+    const alvo = this.cinza ? 1 : 0;
+    if (this.drenagem === alvo) return;
+    this.drenagem += (alvo - this.drenagem) * (1 - Math.exp(-dtRealS / CINZA_TAU_S));
+    if (Math.abs(alvo - this.drenagem) < 0.002) this.drenagem = alvo;
+    const k = this.drenagem;
+    this.adjust.saturation = SAT_VIVA + (SAT_CINZA - SAT_VIVA) * k;
+    this.adjust.contrast = CONTRASTE_VIVO + (CONTRASTE_CINZA - CONTRASTE_VIVO) * k;
   }
 
   update(dtSeconds: number): void {

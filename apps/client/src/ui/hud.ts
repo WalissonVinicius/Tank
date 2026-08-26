@@ -23,8 +23,13 @@
 //
 // Desempenho: atualiza por diff — só encosta em `textContent`/classe que mudou.
 import { emblemaHtml } from '../render/animais.js';
+// V2 §2: o killfeed é o ÚNICO ponto do cliente que sabe, ao mesmo tempo, quem matou e quem morreu
+// — `main.ts` monta esse par nos dois modos (local e online) e o entrega aqui. Por isso a
+// confirmação de abate nasce deste arquivo e pede ao Renderer o retorno dentro do mundo.
+import { rendererAtivo } from '../render/Renderer.js';
+import { SOM_ABATE, SOM_AUTOGOL_ZOEIRA, tocar, tocarComAtraso } from '../audio.js';
 import { ICONE, img } from './icons.js';
-import { nomeColorido, type Ator } from './zoeira.js';
+import { carimboDeAutogol, nomeColorido, type Ator } from './zoeira.js';
 
 export interface HudState {
   round: number;
@@ -54,6 +59,10 @@ export interface KillfeedEvento {
 
 /** Quanto tempo cada linha do killfeed fica na tela antes de sair sozinha. */
 const FEED_VIDA_MS = 4000;
+/** Quanto tempo o carimbo de AUTOGOL fica na tela. */
+const CARIMBO_VIDA_MS = 2200;
+/** Atraso do "wah-wah" em relação ao estouro — é onde mora a graça. */
+const CARIMBO_SOM_MS = 190;
 /** Máximo de linhas visíveis ao mesmo tempo — mais que isso vira parede de texto. */
 const MAX_FEED = 4;
 interface FeedItem {
@@ -80,6 +89,8 @@ let els: {
   eliminadoSub: HTMLElement;
   reconectando: HTMLElement;
   treino: HTMLElement;
+  autogol: HTMLElement;
+  autogolSub: HTMLElement;
 } | null = null;
 
 let raiz: HTMLElement | null = null;
@@ -143,6 +154,14 @@ function ensureBuilt(root: HTMLElement): void {
       </div>
     </div>
 
+    <!-- Carimbo de AUTOGOL: só do jogador local, e só quando ele se explodiu com a própria bala.
+         Fica no HUD (DOM) de propósito — no mesmo instante o mundo perde a cor (V2 §3), e o
+         carimbo é o único vermelho que sobra na tela. -->
+    <div id="hud-autogol" aria-hidden="true">
+      <div class="placa">AUTOGOL!</div>
+      <div class="sub" id="hud-autogol-sub"></div>
+    </div>
+
     <div id="hud-reconectando">RECONECTANDO<i>…</i></div>
 
     <!-- Selo de treino: canto discreto, fora do caminho do relógio e da munição. -->
@@ -165,6 +184,8 @@ function ensureBuilt(root: HTMLElement): void {
     eliminadoSub: root.querySelector('#hud-eliminado-sub')!,
     reconectando: root.querySelector('#hud-reconectando')!,
     treino: root.querySelector('#hud-treino')!,
+    autogol: root.querySelector('#hud-autogol')!,
+    autogolSub: root.querySelector('#hud-autogol-sub')!,
   };
   built = true;
 }
@@ -184,11 +205,59 @@ export function pushKillfeed(ev: KillfeedEvento): void {
   feed.push({ html, tag: ev.tag, nascido: performance.now(), seq: feedSeq++ });
   while (feed.length > MAX_FEED) feed.shift();
   desenharFeed();
+  confirmarMomento(ev);
+}
+
+/**
+ * O momento do abate (V2 §2).
+ *
+ * O killfeed já é uma linha por morte, mas ele é informação para a SALA inteira: quem atirou não
+ * tem retorno nenhum de que acertou, e num jogo de ricochete a explosão acontece longe dele — às
+ * vezes fora do campo de visão. Aqui esse retorno é criado, e o autogol ganha tratamento próprio.
+ */
+function confirmarMomento(ev: KillfeedEvento): void {
+  const renderer = rendererAtivo();
+  if (!renderer) return;
+
+  if (ev.tag === 'autogol') {
+    // A etiqueta no mundo vale para o autogol de QUALQUER um: é a piada central do jogo e ela
+    // pertence à sala, não só a quem se explodiu.
+    renderer.marcarAutogol(ev.vitima.color);
+    if (!renderer.souOJogadorLocal(ev.vitima.color)) return;
+    carimbarAutogol();
+    tocarComAtraso(SOM_AUTOGOL_ZOEIRA, CARIMBO_SOM_MS);
+    return;
+  }
+
+  // Comparar por COR e não por nome: a cor é única dentro de uma partida, o nome não — nada
+  // impede duas pessoas de entrarem na sala como "Ana".
+  const matador = ev.matador;
+  if (!matador || !renderer.souOJogadorLocal(matador.color)) return;
+  renderer.confirmarAbate(ev.vitima.name, ev.vitima.color);
+  void tocar(SOM_ABATE);
+}
+
+let carimboTimer = 0;
+
+/** Carimba (ou recarimba) o AUTOGOL na tela. */
+function carimbarAutogol(): void {
+  if (!els) return;
+  els.autogolSub.textContent = carimboDeAutogol();
+  // Tirar e repor a classe no mesmo frame não reinicia a animação — o navegador só enxerga o
+  // estado final. Ler `offsetWidth` no meio força o reflow que separa os dois estados.
+  els.autogol.classList.remove('ativa');
+  void els.autogol.offsetWidth;
+  els.autogol.classList.add('ativa');
+  window.clearTimeout(carimboTimer);
+  carimboTimer = window.setTimeout(() => els?.autogol.classList.remove('ativa'), CARIMBO_VIDA_MS);
 }
 
 export function resetKillfeed(): void {
   feed.length = 0;
   desenharFeed();
+  // Rodada nova não herda o carimbo da morte da rodada anterior.
+  window.clearTimeout(carimboTimer);
+  els?.autogol.classList.remove('ativa');
 }
 
 /**

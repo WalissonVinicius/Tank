@@ -40,6 +40,21 @@ const FRASES_KILL_DUPLO = [
   'Ninguém foi mais rápido — os dois pagaram o preço',
 ];
 
+/**
+ * Linhas do carimbo de AUTOGOL (V2 §2) — as únicas frases de zoeira que aparecem DURANTE a ação.
+ *
+ * Elas cabem aqui, e as outras não, porque o carimbo é do próprio jogador sobre a própria morte:
+ * ele acabou de perder o controle do tanque e não tem mais nada para ler na tela. É a exceção que
+ * a Fase 8 §3 abriu quando tirou a zoeira do killfeed.
+ */
+const CARIMBOS_AUTOGOL = [
+  'a bala voltou pra casa',
+  'obra sua, ninguém ajudou',
+  'o ricochete não perdoa',
+  'foi você mesmo, sim',
+  'a parede só devolveu',
+];
+
 function sorteia<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)]!;
 }
@@ -76,6 +91,11 @@ export function destaqueKill(k: Ator, v: Ator, ricochete: boolean): Destaque {
   return ricochete
     ? { html: fmt(sorteia(FRASES_KILL_RICOCHETE), k, v), peso: 1 }
     : { html: fmt(sorteia(FRASES_KILL_DIRETO), k, v), peso: 0 };
+}
+
+/** Uma linha curta para o carimbo de autogol do jogador local. */
+export function carimboDeAutogol(): string {
+  return sorteia(CARIMBOS_AUTOGOL);
 }
 
 export function fraseEmpate(): string {

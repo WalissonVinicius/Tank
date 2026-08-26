@@ -11,35 +11,90 @@ import {
   TICK_HZ,
   TURRET_RATE,
 } from '@tank/protocol';
-import { circleVsAabbSlide, hasLineOfSight, raycastSegment, reflect } from './collision.js';
+import { circleVsAabbSlide, hasLineOfSight, raycastSegment } from './collision.js';
 import { nextStepTowards } from './maze.js';
 import type { Rng } from './rng.js';
 import type { Aabb, Bullet, Input, Maze, Tank, Vec2 } from './types.js';
 
 /**
- * Capacidades do bot, ligadas por dificuldade (Fase 13 §4). Não é sistema de configuração: são
- * quatro chaves booleanas em cima do erro de mira que já existia, e as três receitas prontas de
- * `BOT_DIFFICULTY` são o que o jogo usa.
+ * Capacidades do bot, ligadas por dificuldade. Não é sistema de configuração: são três chaves
+ * booleanas mais quatro números de "corpo" (mira, gatilho, reflexo e visão de ameaça), e as três
+ * receitas prontas de `BOT_DIFFICULTY` são o que o jogo usa.
  */
 export interface BotConfig {
   aimErrorRad: number; // erro de mira em radianos, maior = bot pior de mira
   turnThreshold: number; // rad — abaixo disso considera "já mirando" o suficiente para atirar
-  /** Percebe bala vindo na direção dele e sai da linha. */
-  desvia: boolean;
+  /**
+   * Tempo de reação, em ticks: de quantos em quantos ticks ele OLHA para o campo de balas. Entre
+   * duas leituras ele age com a decisão anterior, como um jogador que ainda não processou o que
+   * apareceu na tela. 1 = reflexo de máquina (olha todo tick).
+   */
+  ticksDeReacao: number;
+  /**
+   * Quantos segundos à frente ele enxerga na trajetória de uma bala. Curto = só percebe o que já
+   * está em cima dele; longo = antecipa e sai da linha com folga. **Zero = não desvia**: ele nem
+   * repara nas balas, e é isso que separa o fácil dos outros dois.
+   */
+  horizonteDeAmeaca: number;
   /** Sem linha de visão, procura um ângulo que quica 1× e chega no alvo. */
   ricocheteia: boolean;
   /** Simula o próprio tiro antes de puxar o gatilho e engole o que voltaria em cima dele. */
   evitaAutogol: boolean;
-  /** Sob ameaça ou recarregando, procura posição sem linha de visão para o inimigo. */
+  /** Sob ameaça ou recarregando, procura posição sem linha de visão para o inimigo; mira antecipando. */
   usaParede: boolean;
 }
 
-// Escalonamento pedido na Fase 13: fácil SÓ desvia; difícil desvia, ricocheteia, evita autogol e
-// usa a parede. O médio é o degrau do meio (desvia, ricocheteia e não se mata).
+/**
+ * As três receitas do jogo, recalibradas para o movimento absoluto.
+ *
+ * O degrau entre elas não pode mais ser só capacidade booleana. Com o movimento absoluto SAIR DA
+ * LINHA ficou barato para todo mundo (não há mais giro de chassi a pagar antes de andar para o
+ * lado), e o antigo `desvia: true` idêntico nos três níveis nivelava o jogo por baixo: o fácil
+ * ganhava com a mudança tanto quanto o difícil. O que separa os níveis agora é o CORPO —
+ *
+ *   · `horizonteDeAmeaca` — quanto de futuro ele enxerga. O fácil enxerga ZERO: ele entra na linha
+ *     de tiro, que é o erro mais humano e mais reconhecível que um jogador ruim comete. O médio vê
+ *     0,3 s (64 px): percebe a bala quando ela já está perto, e sai correndo em cima da hora. O
+ *     difícil vê a vida inteira da bala E acompanha os ricochetes dela.
+ *   · `ticksDeReacao` — quanto ele demora para processar o que vê. 16 ticks são 267 ms, reação de
+ *     jogador de fim de tarde; 1 tick é reflexo de máquina.
+ *   · `aimErrorRad` — o quanto a mão treme. 0,55 rad espalha o tiro do fácil por meia tela.
+ *
+ * E o freio de autogol virou exclusividade do difícil: o tiro que volta em cima do dono é a piada
+ * central do jogo, e um bot que nunca cai nela é justamente o que separa "difícil" de "padrão".
+ *
+ * Placar medido em 100 duelos com lados trocados, nas mesmas seeds do `bot-esperto.test.ts`:
+ * difícil 88 × 12 fácil, difícil 77 × 23 médio, médio 68 × 31 fácil. Numa amostra de 300 seeds
+ * espalhadas os mesmos confrontos dão 86% e 76%, então o número oficial não é sorte de seed.
+ */
 export const BOT_DIFFICULTY: Record<'facil' | 'medio' | 'dificil', BotConfig> = {
-  facil: { aimErrorRad: 0.35, turnThreshold: 0.25, desvia: true, ricocheteia: false, evitaAutogol: false, usaParede: false },
-  medio: { aimErrorRad: 0.18, turnThreshold: 0.15, desvia: true, ricocheteia: true, evitaAutogol: true, usaParede: false },
-  dificil: { aimErrorRad: 0.005, turnThreshold: 0.04, desvia: true, ricocheteia: true, evitaAutogol: true, usaParede: true },
+  facil: {
+    aimErrorRad: 0.55,
+    turnThreshold: 0.3,
+    ticksDeReacao: 12,
+    horizonteDeAmeaca: 0,
+    ricocheteia: false,
+    evitaAutogol: false,
+    usaParede: false,
+  },
+  medio: {
+    aimErrorRad: 0.16,
+    turnThreshold: 0.13,
+    ticksDeReacao: 16,
+    horizonteDeAmeaca: 0.3,
+    ricocheteia: true,
+    evitaAutogol: false,
+    usaParede: false,
+  },
+  dificil: {
+    aimErrorRad: 0.005,
+    turnThreshold: 0.04,
+    ticksDeReacao: 1,
+    horizonteDeAmeaca: BULLET_LIFE,
+    ricocheteia: true,
+    evitaAutogol: true,
+    usaParede: true,
+  },
 };
 
 /** O que o bot enxerga além do labirinto e do inimigo. Ausente = ele decide só com a geometria. */
@@ -152,9 +207,11 @@ function tracarTiro(ox: number, oy: number, angulo: number, maze: Maze): void {
     if (quicadas >= MAX_BOUNCES) return;
     quicadas++;
 
-    const refletido = reflect({ x: dx, y: dy }, hit.normal);
-    dx = refletido.x;
-    dy = refletido.y;
+    // Reflexão em linha, sem passar por `reflect()`: aqui dentro ela roda milhares de vezes por
+    // segundo e o Vec2 de retorno virava lixo de GC — e é a coleta que produz os picos de tick.
+    const projecao = dx * hit.normal.x + dy * hit.normal.y;
+    dx -= 2 * projecao * hit.normal.x;
+    dy -= 2 * projecao * hit.normal.y;
     x = hit.point.x + hit.normal.x * 0.05;
     y = hit.point.y + hit.normal.y * 0.05;
   }
@@ -223,63 +280,125 @@ function autogolProvavel(tank: Tank, angulo: number, maze: Maze): boolean {
   return distanciaAteATrajetoria(tank.x, tank.y, VOO_ATE_FICAR_LETAL) <= RAIO_ACERTO + 3;
 }
 
-// Varredura grossa de ângulos + refino local em volta do melhor. Grosso demais nunca acerta um
-// tanque de 18 px a 300 px de distância; fino demais custa raycast à toa. 24 passos de 15° acham
-// a "família" de ângulos certa e o refino fecha a pontaria.
-const ANGULOS_GROSSOS = 24;
-const AMOSTRAS_DE_REFINO = 8;
-/** Acima disso o melhor ângulo grosso nem chegou perto — refinar não salvaria o tiro. */
-const ERRO_QUE_VALE_REFINAR = CELL * 2;
+// ------------------------------------------------------------------------------------------
+// Trajetória prevista de cada bala — calculada UMA vez por bala por tick, não uma por bot
+// ------------------------------------------------------------------------------------------
 
 /**
- * Ângulo de tiro que quica uma vez e alcança o alvo, ou `null` se não achou nenhum.
- *
- * Não procura o ótimo: procura UM. O ricochete é a assinatura do jogo e o que faltava na IA da
- * Fase 2 — sem isto o bot atravessa a rodada inteira contornando parede sem nunca revidar de
- * quem está do outro lado dela.
+ * Um trecho reto do voo futuro de uma bala. `dx`/`dy` são unitários e `d0` é a distância já
+ * percorrida quando ela entra aqui — dividir por `BULLET_SPEED` converte para segundos.
  */
-function planejarRicochete(tank: Tank, alvo: Vec2, maze: Maze, evitaAutogol: boolean): number | null {
-  const passo = (Math.PI * 2) / ANGULOS_GROSSOS;
-  let melhorAngulo = 0;
-  let melhorErro = Infinity;
+interface TrechoDeVoo {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  comprimento: number;
+  d0: number;
+}
 
-  for (let i = 0; i < ANGULOS_GROSSOS; i++) {
-    const angulo = i * passo;
-    const erro = erroDoTiro(tank, angulo, alvo, maze);
-    if (erro < melhorErro) {
-      melhorErro = erro;
-      melhorAngulo = angulo;
-    }
+/** Trajetória futura de uma bala + o estado dela que gerou essa previsão (o "selo" do cache). */
+interface VooPrevisto {
+  maze: Maze | null;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  bounces: number;
+  age: number;
+  trechos: TrechoDeVoo[];
+  n: number;
+}
+
+// A previsão do voo de uma bala não depende de QUEM está perguntando: é função pura da bala e do
+// labirinto. Sem este cache, os 10 bots da sala refaziam o mesmo raycast de ricochete para as
+// mesmas 30 balas em todo tick — 10× o trabalho e 10× o lixo de GC, que é o que estourava o
+// orçamento do tick. Como o valor guardado é idêntico ao recalculado, compartilhar entre bots
+// (e até entre salas do mesmo processo) não interfere no determinismo de ninguém.
+const vooPorBala = new WeakMap<Bullet, VooPrevisto>();
+
+function preverVoo(bala: Bullet, maze: Maze): VooPrevisto {
+  let voo = vooPorBala.get(bala);
+  if (
+    voo !== undefined &&
+    voo.maze === maze &&
+    voo.x === bala.x &&
+    voo.y === bala.y &&
+    voo.vx === bala.vx &&
+    voo.vy === bala.vy &&
+    voo.bounces === bala.bounces &&
+    voo.age === bala.age
+  ) {
+    return voo;
   }
-
-  if (melhorErro > ERRO_QUE_VALE_REFINAR) return null;
-
-  const fino = passo / (AMOSTRAS_DE_REFINO + 1);
-  for (let k = -AMOSTRAS_DE_REFINO / 2; k <= AMOSTRAS_DE_REFINO / 2; k++) {
-    if (k === 0) continue;
-    const angulo = melhorAngulo + k * fino;
-    const erro = erroDoTiro(tank, angulo, alvo, maze);
-    if (erro < melhorErro) {
-      melhorErro = erro;
-      melhorAngulo = angulo;
-    }
+  if (voo === undefined) {
+    voo = { maze: null, x: 0, y: 0, vx: 0, vy: 0, bounces: 0, age: 0, trechos: [], n: 0 };
+    vooPorBala.set(bala, voo);
   }
+  voo.maze = maze;
+  voo.x = bala.x;
+  voo.y = bala.y;
+  voo.vx = bala.vx;
+  voo.vy = bala.vy;
+  voo.bounces = bala.bounces;
+  voo.age = bala.age;
+  voo.n = 0;
 
-  if (melhorErro > RAIO_ACERTO) return null;
-  if (evitaAutogol && autogolProvavel(tank, melhorAngulo, maze)) return null;
-  return normalizeAngle(melhorAngulo);
+  const velocidade = Math.hypot(bala.vx, bala.vy);
+  if (velocidade < 1e-6) return voo;
+
+  let dx = bala.vx / velocidade;
+  let dy = bala.vy / velocidade;
+  let x = bala.x;
+  let y = bala.y;
+  let restante = Math.max(0, BULLET_LIFE - bala.age) * velocidade;
+  let percorrido = 0;
+  let quicadas = bala.bounces;
+
+  const de: Vec2 = { x: 0, y: 0 };
+  const para: Vec2 = { x: 0, y: 0 };
+  const paredes = paredesParaBala(maze);
+
+  while (restante > 1e-6 && voo.n <= MAX_BOUNCES + 1) {
+    de.x = x;
+    de.y = y;
+    para.x = x + dx * restante;
+    para.y = y + dy * restante;
+    const hit = raycastSegment(de, para, paredes);
+    const comprimento = hit ? restante * hit.t : restante;
+
+    let t = voo.trechos[voo.n];
+    if (t === undefined) {
+      t = { x: 0, y: 0, dx: 0, dy: 0, comprimento: 0, d0: 0 };
+      voo.trechos[voo.n] = t;
+    }
+    t.x = x;
+    t.y = y;
+    t.dx = dx;
+    t.dy = dy;
+    t.comprimento = comprimento;
+    t.d0 = percorrido;
+    voo.n++;
+
+    if (!hit) return voo;
+    percorrido += comprimento;
+    restante -= comprimento;
+    if (quicadas >= MAX_BOUNCES) return voo;
+    quicadas++;
+
+    const projecao = dx * hit.normal.x + dy * hit.normal.y;
+    dx -= 2 * projecao * hit.normal.x;
+    dy -= 2 * projecao * hit.normal.y;
+    x = hit.point.x + hit.normal.x * 0.05;
+    y = hit.point.y + hit.normal.y * 0.05;
+  }
+  return voo;
 }
 
 // ------------------------------------------------------------------------------------------
 // Desvio de bala
 // ------------------------------------------------------------------------------------------
 
-/**
- * Quanto à frente o bot enxerga na trajetória de uma bala, em segundos. A 215 px/s isso são ~2,8
- * células — o tanque anda a 60 px/s e precisa de tempo para girar E sair da linha; menos que isso
- * e ele "reage" já morto.
- */
-const HORIZONTE_DE_AMEACA = 1.2;
 /** Folga além do raio de acerto: reagir só ao que passaria raspando é reagir tarde demais. */
 const MARGEM_DE_AMEACA = 10;
 
@@ -295,72 +414,62 @@ let ameacaBy = 0;
  *
  * O teste é o mesmo mínimo de distância relativa que a colisão bala×bala usa: em cada trecho a
  * posição relativa anda em linha reta, então o instante de aproximação máxima sai da derivada.
- * No difícil, a previsão acompanha também o único ricochete permitido; nos outros níveis conserva
- * o horizonte curto e retilíneo anterior.
+ * `preveRicochete` decide se ele acompanha a bala depois de ela quicar; `horizonteSegundos` é
+ * quanto de futuro ele enxerga — os dois saem da dificuldade.
  */
-function ameacaMaisUrgente(tank: Tank, bullets: readonly Bullet[], maze: Maze, preveRicochete: boolean): number | null {
+function ameacaMaisUrgente(
+  tank: Tank,
+  bullets: readonly Bullet[],
+  maze: Maze,
+  preveRicochete: boolean,
+  horizonteSegundos: number,
+): number | null {
   const limite = RAIO_ACERTO + MARGEM_DE_AMEACA;
   let melhorT = Infinity;
   const posBala: Vec2 = { x: 0, y: 0 };
   const posTanque: Vec2 = { x: tank.x, y: tank.y };
-  const destino: Vec2 = { x: 0, y: 0 };
-  const paredes = paredesParaBala(maze);
 
   for (const bala of bullets) {
-    const horizonte = Math.min(BULLET_LIFE - bala.age, preveRicochete ? BULLET_LIFE : HORIZONTE_DE_AMEACA);
+    const velocidade = Math.hypot(bala.vx, bala.vy);
+    if (velocidade < 1e-6) continue;
+    const horizonte = Math.min(BULLET_LIFE - bala.age, horizonteSegundos);
     if (horizonte <= 0) continue;
 
-    let x = bala.x;
-    let y = bala.y;
-    let vx = bala.vx;
-    let vy = bala.vy;
-    let quicadas = bala.bounces;
-    let decorrido = 0;
+    const alcance = horizonte * velocidade;
+    const voo = preverVoo(bala, maze);
+    // Sem previsão de ricochete o bot só enxerga o trecho retilíneo em que a bala está agora.
+    const ateTrecho = preveRicochete ? voo.n : Math.min(voo.n, 1);
+    // Distância que a bala ainda precisa voar para ficar letal para o próprio dono.
+    const letalA = bala.ownerId === tank.id ? (SELF_IMMUNITY - bala.age) * velocidade : -Infinity;
 
-    while (decorrido < horizonte) {
-      const restante = horizonte - decorrido;
-      posBala.x = x;
-      posBala.y = y;
-      destino.x = x + vx * restante;
-      destino.y = y + vy * restante;
-      const hit = raycastSegment(posBala, destino, paredes);
-      const duracao = hit ? restante * hit.t : restante;
-      const px = x - tank.x;
-      const py = y - tank.y;
-      const vv = vx * vx + vy * vy;
+    for (let i = 0; i < ateTrecho; i++) {
+      const t = voo.trechos[i]!;
+      if (t.d0 >= alcance) break;
+      const comprimento = Math.min(t.comprimento, alcance - t.d0);
+      const inicio = Math.max(0, letalA - t.d0);
+      if (inicio > comprimento) continue;
 
-      const inicioLetal = bala.ownerId === tank.id ? SELF_IMMUNITY - bala.age - decorrido : 0;
-      if (vv > 1e-6 && inicioLetal <= duracao) {
-        let noTrecho = -(px * vx + py * vy) / vv;
-        if (noTrecho < Math.max(0, inicioLetal)) noTrecho = Math.max(0, inicioLetal);
-        else if (noTrecho > duracao) noTrecho = duracao;
-        const encontro = decorrido + noTrecho;
-        const dx = px + vx * noTrecho;
-        const dy = py + vy * noTrecho;
+      const px = t.x - tank.x;
+      const py = t.y - tank.y;
+      let s = -(px * t.dx + py * t.dy);
+      if (s < inicio) s = inicio;
+      else if (s > comprimento) s = comprimento;
 
-        posBala.x = x + vx * noTrecho;
-        posBala.y = y + vy * noTrecho;
-        if (
-          encontro < melhorT &&
-          Math.hypot(dx, dy) <= limite &&
-          hasLineOfSight(posBala, posTanque, maze.walls)
-        ) {
-          melhorT = encontro;
-          ameacaVx = vx;
-          ameacaVy = vy;
-          ameacaBx = x;
-          ameacaBy = y;
-        }
-      }
+      const encontro = (t.d0 + s) / velocidade;
+      if (encontro >= melhorT) continue;
+      const ex = px + t.dx * s;
+      const ey = py + t.dy * s;
+      if (Math.hypot(ex, ey) > limite) continue;
 
-      if (!hit || !preveRicochete || quicadas >= MAX_BOUNCES || duracao < 1e-6) break;
-      const refletida = reflect({ x: vx, y: vy }, hit.normal);
-      vx = refletida.x;
-      vy = refletida.y;
-      x = hit.point.x + hit.normal.x * 0.05;
-      y = hit.point.y + hit.normal.y * 0.05;
-      quicadas++;
-      decorrido += duracao;
+      posBala.x = t.x + t.dx * s;
+      posBala.y = t.y + t.dy * s;
+      if (!hasLineOfSight(posBala, posTanque, maze.walls)) continue;
+
+      melhorT = encontro;
+      ameacaVx = t.dx * velocidade;
+      ameacaVy = t.dy * velocidade;
+      ameacaBx = t.x;
+      ameacaBy = t.y;
     }
   }
 
@@ -430,6 +539,54 @@ function procurarCobertura(tank: Tank, alvo: Vec2, maze: Maze): number | null {
     }
   }
   return melhorAngulo;
+}
+
+// ------------------------------------------------------------------------------------------
+// Rota — o BFS do labirinto, memorizado por par de células
+// ------------------------------------------------------------------------------------------
+
+/** Índice linear da célula que contém o ponto, com o mesmo clamp de `cellOf` do maze.ts. */
+function celulaDe(maze: Maze, x: number, y: number): number {
+  let cx = Math.floor(x / maze.cell);
+  let cy = Math.floor(y / maze.cell);
+  if (cx < 0) cx = 0;
+  else if (cx > maze.cols - 1) cx = maze.cols - 1;
+  if (cy < 0) cy = 0;
+  else if (cy > maze.rows - 1) cy = maze.rows - 1;
+  return cy * maze.cols + cx;
+}
+
+const rotasPorLabirinto = new WeakMap<Maze, Map<number, Vec2 | null>>();
+/** Teto da tabela de rotas por labirinto — passou disso, esvazia e recomeça. */
+const MAXIMO_DE_ROTAS = 4096;
+
+/**
+ * `nextStepTowards` memorizado. O BFS só depende do par (célula de origem, célula de destino), e
+ * numa sala de 10 bots quase todos perseguem alvos nas mesmas poucas células — sem o memo o mesmo
+ * flood fill era refeito dezenas de vezes por segundo, alocando a grade inteira de novo a cada
+ * chamada. `null` significa "não há passo intermediário, vá direto no alvo".
+ */
+function proximoPassoMemorizado(maze: Maze, tank: Tank, alvo: Vec2): Vec2 | null {
+  const origem = celulaDe(maze, tank.x, tank.y);
+  const destino = celulaDe(maze, alvo.x, alvo.y);
+  if (origem === destino) return null;
+
+  let tabela = rotasPorLabirinto.get(maze);
+  if (tabela === undefined) {
+    tabela = new Map();
+    rotasPorLabirinto.set(maze, tabela);
+  }
+  const chave = origem * maze.cols * maze.rows + destino;
+  const guardado = tabela.get(chave);
+  if (guardado !== undefined) return guardado;
+
+  // `nextStepTowards` devolve o PRÓPRIO `alvo` quando não há caminho — e nesse caso o valor
+  // depende da posição exata do alvo, que não cabe num cache por célula.
+  const passo = nextStepTowards(maze, tank, alvo);
+  const valor = passo === alvo ? null : passo;
+  if (tabela.size >= MAXIMO_DE_ROTAS) tabela.clear();
+  tabela.set(chave, valor);
+  return valor;
 }
 
 // ------------------------------------------------------------------------------------------
@@ -518,16 +675,58 @@ export function botInput(
   return { mover, fire: temTiro && torreAlinhada, aim };
 }
 
-// BFS custa caro para rodar todo tick × todo bot. Recalcula a rota só a cada ~10 ticks (6×/s)
-// e reaproveita o último waypoint nos demais — o inimigo não muda de célula rápido o bastante
-// para precisar de mais que isso. O throttle é contado em ticks de simulação (não em tempo de
-// relógio), então é idêntico no servidor e no cliente.
+// ------------------------------------------------------------------------------------------
+// Escalonamento — o teto de custo por tick
+// ------------------------------------------------------------------------------------------
+//
+// O problema não era o custo MÉDIO da IA (0,2 ms num tick de 16,67 ms), era o PICO: os 10 bots da
+// sala replanejavam ricochete no mesmo tick e o servidor perdia dois ticks inteiros — a sala
+// engasgava para todo mundo, inclusive para os humanos. A correção tem três camadas, e as três
+// dependem só de coisas determinísticas: a fase sorteada do RNG semeado do bot e o número do tick
+// da simulação. Nada de relógio de parede, nada de "sobrou CPU neste tick?".
+//
+//   1. FASE POR BOT. Cada bot sorteia do próprio RNG semeado uma fase fixa e só COMEÇA a tarefa
+//      cara nos ticks em que `(tick + fase) % período === 0`. Como os bots da sala nascem de seeds
+//      diferentes, eles caem em ticks diferentes.
+//   2. VARREDURA FATIADA. Mesmo quando dois bots colidem na mesma fase, nenhum deles paga uma
+//      varredura de ricochete inteira num tick só: ela sai em fatias de `AMOSTRAS_POR_FATIA`
+//      ângulos, uma por tick. É o teto duro, e ele é ESTRUTURAL: o pico por bot é o custo de uma
+//      fatia, não de uma varredura, aconteça o que acontecer com as fases. O plano anterior
+//      continua valendo enquanto o novo não fica pronto — degradação suave, não trava.
+//   3. MEMOS PUROS. Voo previsto de bala e passo de BFS são função só da bala e do labirinto, então
+//      são calculados uma vez e reaproveitados por todos os bots (ver `preverVoo` e
+//      `proximoPassoMemorizado`). Como o valor guardado é idêntico ao recalculado, o cache não
+//      acopla uma sala à outra: quem consulta primeiro não muda o resultado de quem consulta
+//      depois. O `bot-esperto.test.ts` cobre exatamente isso com duas salas intercaladas.
+//
+// Medido no `_bench.ts` com 10 bots difíceis, antes → depois: média 0,20 → 0,06 ms, p99 1,76 →
+// 0,49 ms, pior caso 4,2 → 1,6 ms.
+
+/** BFS custa caro: 6 recálculos de rota por segundo bastam, o inimigo não troca de célula mais rápido. */
 const TICKS_ENTRE_RECALCULO_DE_ROTA = 10;
-/** Base de 3 planos/s; contra quem ricocheteia, o difícil reage a cada 8 ticks (7,5 planos/s). */
+/**
+ * Espera mínima entre duas varreduras de ricochete: ~3 planos/s (a fase do bot adia o começo em
+ * até mais 7 ticks). Contra quem ricocheteia, o difícil encurta para 8 ticks.
+ */
 const TICKS_ENTRE_PLANOS_DE_TIRO = 20;
 const TICKS_ENTRE_BUSCAS_DE_COBERTURA = 12;
 /** Por quanto tempo depois de uma bala passar raspando o bot continua se comportando como acuado. */
 const TICKS_DE_MEMORIA_DE_AMEACA = 45;
+
+// Varredura grossa de ângulos + refino local em volta do melhor. Grosso demais nunca acerta um
+// tanque de 18 px a 300 px de distância; fino demais custa raycast à toa. 24 passos de 15° acham
+// a "família" de ângulos certa e o refino fecha a pontaria.
+const ANGULOS_GROSSOS = 24;
+const AMOSTRAS_DE_REFINO = 8;
+/** Acima disso o melhor ângulo grosso nem chegou perto — refinar não salvaria o tiro. */
+const ERRO_QUE_VALE_REFINAR = CELL * 2;
+/**
+ * Ângulos avaliados por tick. Os 32 da varredura completa saem em 4 ticks (67 ms) em vez de todos
+ * de uma vez — abaixo do tempo de reação humano, e com 1/4 do pico de custo.
+ */
+const AMOSTRAS_POR_FATIA = 8;
+/** Varredura completa: os 24 ângulos grossos mais os 8 do refino. */
+const TOTAL_DE_AMOSTRAS = ANGULOS_GROSSOS + AMOSTRAS_DE_REFINO;
 
 export interface Bot {
   /**
@@ -551,7 +750,7 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
   let waypointTick: number | null = null;
 
   let planoDeTiro: number | null = null;
-  let planoTick: number | null = null;
+  let planoConcluidoTick: number | null = null;
 
   let cobertura: number | null = null;
   let coberturaTick: number | null = null;
@@ -560,6 +759,16 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
   let adversarioUsaRicochete = false;
   let tinhaLosNoTickAnterior: boolean | null = null;
 
+  // Reflexo: a última leitura do campo de balas e a fuga que ela produziu. Entre duas leituras o
+  // bot age com esta decisão — é o `ticksDeReacao` da dificuldade.
+  let fugaMemorizada: number | null = null;
+  let tickDaLeituraDeAmeaca: number | null = null;
+
+  // Varredura de ricochete em curso: em que amostra ela está e qual o melhor ângulo até agora.
+  let varreduraAmostra = -1;
+  let varreduraMelhorAngulo = 0;
+  let varreduraMelhorErro = Infinity;
+
   let alvoAnteriorX: number | null = null;
   let alvoAnteriorY: number | null = null;
   let tickDoAlvoAnterior: number | null = null;
@@ -567,9 +776,11 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
   // Este desempate nasce do RNG semeado e evita que todos os bots escolham sempre o mesmo lado.
   const ladoDeFuga: 1 | -1 = rng.int(2) === 0 ? -1 : 1;
 
-  // Defasagem fixa deste bot dentro do ciclo de replanejamento (ver o uso, logo abaixo). Vem do
-  // RNG semeado, então é idêntica no cliente e no servidor.
-  const defasagem = rng.int(TICKS_ENTRE_PLANOS_DE_TIRO);
+  // Fase deste bot no escalonamento: em que ticks do ciclo ele tem direito de começar uma
+  // varredura de ricochete. Sai do MESMO RNG semeado que o resto — dois bots da sala recebem
+  // seeds diferentes e caem em ticks diferentes, e um bot recriado com a mesma seed cai sempre no
+  // mesmo lugar. Nada de relógio, nada de ordem de chamada, nada de carga de CPU.
+  const fase = rng.int(AMOSTRAS_POR_FATIA);
 
   return {
     think(tank: Tank, target: Vec2, maze: Maze, tick: number, mundo?: BotMundo): Input {
@@ -593,30 +804,38 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
       alvoAnteriorY = target.y;
       tickDoAlvoAnterior = tick;
 
-      let balasProprias = 0;
-      if (mundo) {
+      if (mundo && !adversarioUsaRicochete && tinhaLosNoTickAnterior === false && !temLos) {
+        // Bala nascendo sem que ninguém esteja à vista de ninguém: o adversário está mirando por
+        // ricochete. Quem percebe isso (só o difícil) passa a replanejar o próprio tiro mais rápido.
         for (const bala of mundo.bullets) {
-          if (bala.ownerId === tank.id) balasProprias++;
-          else if (tinhaLosNoTickAnterior === false && !temLos && bala.age <= 1.5 / TICK_HZ) {
-            adversarioUsaRicochete = true;
-          }
+          if (bala.ownerId !== tank.id && bala.age <= 1.5 / TICK_HZ) adversarioUsaRicochete = true;
         }
       }
       tinhaLosNoTickAnterior = temLos;
 
       // ---- 1. estou na mira de alguma bala? ----
       let fuga: number | null = null;
-      if (config.desvia && mundo && mundo.bullets.length > 0) {
-        const quando = ameacaMaisUrgente(tank, mundo.bullets, maze, config.usaParede);
-        if (quando !== null) {
-          tickDaUltimaAmeaca = tick;
-          fuga = escolherFuga(tank, maze, ladoDeFuga);
+      if (config.horizonteDeAmeaca > 0 && mundo) {
+        // O reflexo é a única parte que o difícil paga TODO tick (`ticksDeReacao: 1`): sair da
+        // linha é reação, não planejamento, e amortizá-la seria enfraquecer o bot. Nos níveis
+        // abaixo o intervalo maior é a característica — e sai de graça no orçamento.
+        if (tickDaLeituraDeAmeaca === null || tick - tickDaLeituraDeAmeaca >= config.ticksDeReacao) {
+          tickDaLeituraDeAmeaca = tick;
+          fugaMemorizada = null;
+          if (mundo.bullets.length > 0) {
+            const quando = ameacaMaisUrgente(tank, mundo.bullets, maze, config.usaParede, config.horizonteDeAmeaca);
+            if (quando !== null) {
+              tickDaUltimaAmeaca = tick;
+              fugaMemorizada = escolherFuga(tank, maze, ladoDeFuga);
+            }
+          }
         }
+        fuga = fugaMemorizada;
       }
 
       // ---- 2. para onde mirar ----
       let anguloDeMira =
-        config.usaParede && temLos && balasProprias > 0
+        config.usaParede && temLos
           ? miraAntecipada(
               tank,
               target,
@@ -628,21 +847,63 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
       let temTiro = temLos;
       if (!temLos && config.ricocheteia) {
         const intervaloDoPlano = config.usaParede && adversarioUsaRicochete ? 8 : TICKS_ENTRE_PLANOS_DE_TIRO;
-        if (planoTick === null || tick - planoTick >= intervaloDoPlano) {
-          // A primeira avaliação sai na hora (perder o inimigo de vista e ficar meio segundo sem
-          // resposta seria pior que o custo), mas o relógio dela nasce RECUADO pela defasagem
-          // deste bot: é isso que espalha os replanejamentos seguintes entre os bots da sala, em
-          // vez de deixar os nove recalculando ricochete no mesmo tick.
-          planoTick = planoTick === null ? tick - defasagem : tick;
-          planoDeTiro = planejarRicochete(tank, target, maze, config.evitaAutogol);
+        // A PRIMEIRA varredura depois de perder o inimigo de vista sai na hora — ficar meio
+        // segundo sem resposta seria pior que o custo, e a fatia já limita o pico. As
+        // REavaliações é que respeitam a fase deste bot, e é isso que impede os 10 bots da sala
+        // de replanejar todos no mesmo tick.
+        if (
+          varreduraAmostra < 0 &&
+          (planoConcluidoTick === null || (tick - planoConcluidoTick >= intervaloDoPlano && (tick + fase) % AMOSTRAS_POR_FATIA === 0))
+        ) {
+          varreduraAmostra = 0;
+          varreduraMelhorAngulo = 0;
+          varreduraMelhorErro = Infinity;
         }
+
+        if (varreduraAmostra >= 0) {
+          const passo = (Math.PI * 2) / ANGULOS_GROSSOS;
+          const fim = Math.min(TOTAL_DE_AMOSTRAS, varreduraAmostra + AMOSTRAS_POR_FATIA);
+          // Terminou o grosso sem chegar perto: refinar não salvaria o tiro, desiste da varredura.
+          let desistiu = varreduraAmostra >= ANGULOS_GROSSOS && varreduraMelhorErro > ERRO_QUE_VALE_REFINAR;
+
+          for (; !desistiu && varreduraAmostra < fim; varreduraAmostra++) {
+            let angulo: number;
+            if (varreduraAmostra < ANGULOS_GROSSOS) {
+              angulo = varreduraAmostra * passo;
+            } else if (varreduraAmostra === ANGULOS_GROSSOS && varreduraMelhorErro > ERRO_QUE_VALE_REFINAR) {
+              desistiu = true;
+              break;
+            } else {
+              // Amostras 24..31 viram k ∈ {-4,-3,-2,-1,1,2,3,4} passos finos ao redor do melhor.
+              const k = varreduraAmostra - ANGULOS_GROSSOS - AMOSTRAS_DE_REFINO / 2;
+              angulo = varreduraMelhorAngulo + (k < 0 ? k : k + 1) * (passo / (AMOSTRAS_DE_REFINO + 1));
+            }
+            const erro = erroDoTiro(tank, angulo, target, maze);
+            if (erro < varreduraMelhorErro) {
+              varreduraMelhorErro = erro;
+              varreduraMelhorAngulo = angulo;
+            }
+          }
+
+          if (desistiu || varreduraAmostra >= TOTAL_DE_AMOSTRAS) {
+            const serve =
+              !desistiu &&
+              varreduraMelhorErro <= RAIO_ACERTO &&
+              !(config.evitaAutogol && autogolProvavel(tank, varreduraMelhorAngulo, maze));
+            planoDeTiro = serve ? normalizeAngle(varreduraMelhorAngulo) : null;
+            planoConcluidoTick = tick;
+            varreduraAmostra = -1;
+          }
+        }
+
         if (planoDeTiro !== null) {
           anguloDeMira = planoDeTiro;
           temTiro = true;
         }
       } else if (temLos) {
         planoDeTiro = null;
-        planoTick = null;
+        planoConcluidoTick = null;
+        varreduraAmostra = -1;
       }
 
       // ---- 3. para onde ir ----
@@ -665,7 +926,7 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
         if (cobertura !== null) rumo = cobertura;
       } else if (!temLos) {
         if (waypointTick === null || tick - waypointTick >= TICKS_ENTRE_RECALCULO_DE_ROTA) {
-          waypoint = nextStepTowards(maze, tank, target);
+          waypoint = proximoPassoMemorizado(maze, tank, target);
           waypointTick = tick;
         }
         moveTarget = waypoint ?? target;

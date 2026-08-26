@@ -31,14 +31,20 @@ interface BulletSlot {
 // deslocamento legítimo, e cortar o rastro aí fazia a bala virar um pontinho parado.
 const TELEPORT_DIST = 150;
 
-// Silhueta de ~13,2 × 7,2 px de mundo (BULLET_RADIUS da simulação é 4,2 px) — o corpo metálico
-// vive dentro dela com ~1,6 px de contorno sobrando de cada lado. Duas medidas em vez de um
-// stroke porque, numa peça deste tamanho, um traço centrado comeria metade do preenchimento e a
-// bala voltaria a ser um borrão escuro.
-const OUT_HALF = 6.6;
-const OUT_HW = 3.6;
-const BODY_HALF = 5;
-const BODY_HW = 2.2;
+// Silhueta de ~19,2 × 10,8 px de mundo. A original (13,2 × 7,2) sumia contra o piso claro; o
+// dobro (26,4 × 14,4) foi longe demais e o dono apontou: "a bala ficou grande demais,
+// desproporcional". O tanque tem 37 px de diâmetro, entao 26,4 dava 71% dele — a bala
+// competia com quem a atirou. 19,2 é pouco mais da METADE do tanque: lê como projétil de
+// relance e continua subordinada ao tanque na hierarquia visual. O raio de COLISÃO
+// (BULLET_RADIUS_F em constants.ts) segue intocado em 4,2 px — só o desenho mudou, duas vezes.
+// O corpo metálico vive dentro da silhueta com ~2,5 px de contorno sobrando de cada lado. A
+// margem é mantida em px ABSOLUTOS ao redimensionar: escalá-la junto deixaria o traço fino
+// demais para ler numa peça menor. Duas medidas em vez de um stroke porque um traço centrado
+// comeria metade do preenchimento e a bala voltaria a ser um borrão escuro.
+const OUT_HALF = 9.6;
+const OUT_HW = 5.4;
+const BODY_HALF = 7;
+const BODY_HW = 3;
 const OUTLINE_COLOR = 0x0b1020;
 const METAL = 0xdfe6f4;
 const METAL_SHADE = 0x8b97b4;
@@ -46,11 +52,13 @@ const DEFAULT_TINT = 0xd9dee8;
 
 // Poeira levantada atrás da bala: três borrões escuros em blend normal (fumaça aditiva clareia
 // o piso claro e vira névoa branca). Distâncias fixas em px de mundo, não posições históricas —
-// assim o rastro tem o mesmo comprimento curto em qualquer frame rate.
+// assim o rastro tem o mesmo comprimento curto em qualquer frame rate. Reforçado junto com o
+// corpo (A2): distâncias mais longas para acompanhar a peça maior e alpha mais alto para o
+// rastro ler como direção de voo num relance, não só como uma sombra colada na bala.
 const DUST = [
-  { dist: 9, scale: 0.26, alpha: 0.42 },
-  { dist: 13.5, scale: 0.2, alpha: 0.24 },
-  { dist: 18, scale: 0.14, alpha: 0.11 },
+  { dist: 16, scale: 0.4, alpha: 0.55 },
+  { dist: 24, scale: 0.3, alpha: 0.32 },
+  { dist: 32, scale: 0.2, alpha: 0.16 },
 ] as const;
 
 export class BulletPool {
@@ -135,7 +143,7 @@ export class BulletPool {
     g.fill(OUTLINE_COLOR);
 
     // corpo: metade de baixo em tom mais fundo, metade de cima em metal claro — dois blocos
-    // chapados leem melhor que gradiente numa peça de 5 px em tela.
+    // chapados leem melhor que gradiente numa peça deste tamanho em tela.
     ogiva(BODY_HALF, BODY_HW);
     g.fill(METAL_SHADE);
 
@@ -148,7 +156,7 @@ export class BulletPool {
 
     // faixa de forçamento na cor do dono, colada na base reta — é por ela que se sabe quem
     // atirou sem a bala virar bola de luz colorida.
-    const bandW = 3.2;
+    const bandW = 6.4;
     g.rect(-BODY_HALF, -BODY_HW, bandW, BODY_HW).fill(lighten(tint, 0.16));
     g.rect(-BODY_HALF, 0, bandW, BODY_HW).fill(darken(tint, 0.32));
   }

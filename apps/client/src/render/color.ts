@@ -21,3 +21,15 @@ export function darken(color: number, t: number): number {
 export function lighten(color: number, t: number): number {
   return mixColor(color, 0xffffff, t);
 }
+
+/** Luz quente da paleta do mundo (CLAUDE.md). Superfície que a recebe REFLETE — não brilha. */
+export const LUZ_QUENTE = 0xffb347;
+
+/**
+ * Puxa uma cor na direção da luz quente da arena. É o gesto oposto de `lighten`: em vez de lavar
+ * o tom em direção ao branco, ele o desloca para o âmbar, que é o que faz uma superfície fria
+ * parecer virada para a fonte de luz.
+ */
+export function warm(color: number, t: number): number {
+  return mixColor(color, LUZ_QUENTE, t);
+}

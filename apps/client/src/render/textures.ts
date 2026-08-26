@@ -21,6 +21,18 @@ export interface GameTextures {
   /** Ruído tileável para o piso (TilingSprite, addressMode 'repeat'). */
   floor: Texture;
   /**
+   * Clarão de ambiente: radial branco com queda longa e macia, bem mais suave que `light`.
+   * É a fonte de luz implícita da arena — esticado sobre o mundo inteiro, tingido de quente e
+   * somado ao piso, é o que dá um CENTRO à composição sem estourar o threshold do bloom.
+   */
+  ambient: Texture;
+  /**
+   * Moldura de vinheta: transparente no miolo, escurecendo só nos ~30% externos. Usada em blend
+   * NORMAL (não multiply) e com alpha contido — a regra do projeto é que nenhum canto do
+   * labirinto pode ficar ilegível, então isto é profundidade, não penumbra.
+   */
+  vignette: Texture;
+  /**
    * Setor (fatia) de luz saindo de um ápice à esquerda — o farol do chassi. Ápice em (0, altura/2),
    * então o anchor (0, 0.5) o mantém preso à frente do tanque; girar o sprite gira o cone inteiro.
    */
@@ -103,9 +115,14 @@ function makeFloorTexture(): Texture {
         // O grão é por TEXEL, então em 512 ele fica com metade do tamanho aparente de antes —
         // o que é exatamente o desejado: grão fino é o que sobrevive à ampliação da câmera.
         const grain = hash2(x * 7 + 1, y * 13 + 5);
+        // Escovado horizontal: a senoide tem 48 ciclos inteiros no canvas, então continua
+        // tileável, e o ruído por cima tira o ar de listra mecânica. É o que faz a chapa ler como
+        // metal laminado em vez de plano de cor com granulado.
+        const escovado =
+          Math.sin((y / S) * Math.PI * 2 * 48) * (0.35 + 0.65 * valueNoise2D((x / S) * 8, (y / S) * 8, 8));
         // Amplitude alta de propósito: num mundo claro (sem lightmap escurecendo) a variação do
         // piso é o que impede a arena aberta de parecer chapada.
-        let val = 236 + (v - 0.5) * 86 + (grain - 0.5) * 30;
+        let val = 236 + (v - 0.5) * 92 + (grain - 0.5) * 30 + escovado * 5;
         val = Math.min(255, Math.max(140, val));
         const i = (y * S + x) * 4;
         // Viés frio nos canais quentes: o multiply com o tint da ardósia sai azulado de verdade
@@ -114,6 +131,35 @@ function makeFloorTexture(): Texture {
         d[i + 1] = Math.round(val * 0.97);
         d[i + 2] = Math.round(Math.min(255, val + 2));
         d[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  });
+}
+
+/**
+ * Vinheta em moldura: 60% centrais completamente limpos, escurecimento só no anel externo.
+ *
+ * O canvas é gerado por pixel (e não com createRadialGradient) para a curva poder ser uma
+ * potência — `t^2.2` sobe devagar e só fecha perto da borda, que é a diferença entre
+ * "profundidade" e "penumbra". A regra do projeto proíbe esconder canto de labirinto, então o topo
+ * da curva fica em 0,80 de alpha e ainda passa por um `alpha` de sprite menor que 1 em maze.ts —
+ * o efeito medido nos blocos de borda é ~0,30 de luminância, o dobro do piso mínimo aceitável.
+ */
+function makeVignetteTexture(): Texture {
+  return canvasTexture(256, (ctx, S) => {
+    const img = ctx.createImageData(S, S);
+    const d = img.data;
+    const c = (S - 1) / 2;
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const r = Math.hypot((x - c) / c, (y - c) / c);
+        const t = Math.min(1, Math.max(0, (r - 0.45) / 0.62));
+        const i = (y * S + x) * 4;
+        d[i] = 255;
+        d[i + 1] = 255;
+        d[i + 2] = 255;
+        d[i + 3] = Math.round(Math.pow(t, 2.2) * 0.8 * 255);
       }
     }
     ctx.putImageData(img, 0, 0);
@@ -193,6 +239,15 @@ export function createTextures(renderer: Renderer): GameTextures {
     [0.5, 'rgba(0,0,0,0.85)'],
     [1, 'rgba(0,0,0,0)'],
   ]);
+  // Queda muito mais longa que a de `light`: esticado sobre a arena inteira, um halo com platô no
+  // meio viraria um disco visível. Estes stops fazem o clarão morrer devagar do começo ao fim.
+  const ambient = radialTexture(256, [
+    [0, 'rgba(255,255,255,1)'],
+    [0.25, 'rgba(255,255,255,0.72)'],
+    [0.5, 'rgba(255,255,255,0.38)'],
+    [0.75, 'rgba(255,255,255,0.13)'],
+    [1, 'rgba(255,255,255,0)'],
+  ]);
 
   const track = generateFromGraphics(renderer, (g) => {
     g.roundRect(0, 0, 4.5, 7, 1).fill(0x000000).roundRect(0, 21, 4.5, 7, 1).fill(0x000000);
@@ -206,6 +261,8 @@ export function createTextures(renderer: Renderer): GameTextures {
     scorch: makeScorchTexture(),
     track,
     floor: makeFloorTexture(),
+    ambient,
+    vignette: makeVignetteTexture(),
     headlightCone: makeHeadlightConeTexture(),
   };
 }

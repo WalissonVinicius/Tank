@@ -150,6 +150,31 @@ export function desbloquearAudioNoPrimeiroGesto(): void {
   window.addEventListener('keydown', desbloquear, { once: true });
 }
 
+// ---------------------------------------------------------------------------------------------
+// Sons dos momentos do jogo (V2 §2).
+//
+// Os presets do combate (tiro, ricochete, morte) moram em `main.ts`, junto de quem dispara os
+// eventos da simulação. Estes dois não: quem os dispara é o HUD, ao reconhecer no killfeed que o
+// abate foi DO jogador local — e o HUD não tem nada a ver com a simulação. O lugar certo deles é
+// o módulo de áudio.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Confirmação de abate: duas notas curtas e agudas, subindo. Agudo de propósito — ele toca por
+ * cima do estouro grave da morte e precisa CORTAR, não somar.
+ */
+export const SOM_ABATE: readonly number[] = [
+  0.9, 0, 1046, 0.005, 0.05, 0.09, 0, 1.4, 0, 0, 523, 0.05, 0, 0, 0, 0, 0, 0.6, 0.02,
+];
+
+/**
+ * Autogol do jogador local: serra descendo com trêmulo — o "wah-wah" de piada. Entra ATRASADO em
+ * relação à explosão (ver `tocarComAtraso`), porque a graça está no tempo, não no volume.
+ */
+export const SOM_AUTOGOL_ZOEIRA: readonly number[] = [
+  1.1, 0.05, 330, 0.02, 0.22, 0.34, 2, 0.6, -9, 0, 0, 0, 0, 0.4, 0.12, 0, 0.15, 0.5, 0.12, 0.3,
+];
+
 /** Toca um preset do zzfx. Áudio é cosmético: qualquer falha morre aqui, nunca no laço de frame. */
 export async function tocar(som: readonly number[]): Promise<void> {
   if (encerrado || !querSom) return;
@@ -167,4 +192,16 @@ export async function tocar(som: readonly number[]): Promise<void> {
   } catch {
     // idem
   }
+}
+
+/**
+ * Toca um preset depois de um intervalo. Existe por causa do tempo cômico do autogol: o "wah-wah"
+ * só tem graça DEPOIS do estouro, não junto dele.
+ *
+ * Não guarda o timer nem cancela nada: são alguns milissegundos de piada, e um som atrasado que
+ * chega com o jogo já em outra tela é inofensivo — `tocar()` sozinho já recusa tocar com a aba
+ * oculta ou com o áudio desligado.
+ */
+export function tocarComAtraso(som: readonly number[], atrasoMs: number): void {
+  window.setTimeout(() => void tocar(som), atrasoMs);
 }

@@ -3,13 +3,15 @@
 // internamente o Renderer roda seu próprio ticker para efeitos contínuos (partículas, luzes,
 // screen shake, pós-processamento) que não dependem do ritmo da simulação.
 
-import { Application, Container, Graphics, Sprite } from 'pixi.js';
+import { Application, BitmapText, Container, Graphics, Sprite, Texture } from 'pixi.js';
 import type { Filter } from 'pixi.js';
-import type { Maze, Vec2 } from '@tank/shared-sim';
-import { COUNTDOWN, WORLD_COLORS } from '@tank/protocol';
+import { raycastSegment } from '@tank/shared-sim';
+import type { Aabb, Maze, Vec2 } from '@tank/shared-sim';
+import { BULLET_RADIUS, COUNTDOWN, TANK_RADIUS, WORLD_COLORS } from '@tank/protocol';
 
 import { aplicarEscalaHud, aspectoDaArena, reservasDoJogo, type Reservas } from '../ui/layout.js';
 import { createTextures, type GameTextures } from './textures.js';
+import { lighten } from './color.js';
 import { MazeView } from './maze.js';
 import { TankView } from './tank.js';
 import { BulletPool } from './bullet.js';
@@ -106,6 +108,109 @@ const ANEL_RAIO = 42;
 /** Distância do centro do tanque até a ponta da seta. */
 const SETA_DIST = 70;
 
+// ---------------------------------------------------------------------------------------------
+// LINHA DE MIRA (Fase A3): mostra o ângulo de saída do cano até a PRIMEIRA parede — e para ali.
+//
+// Não mostrar o rebote é decisão de design, não limitação: desenhar a trajetória inteira entrega
+// a resposta pronta e o jogo vira apontar e clicar. Só o ângulo de saída é o que a sinuca faz, e
+// é o bastante para o jogador fechar a conta do ricochete DE CABEÇA — que é a habilidade que dá
+// nome ao jogo.
+// ---------------------------------------------------------------------------------------------
+
+/** Onde a bala nasce, medido do centro do tanque. É a MESMA conta de `stepTanks` em shared-sim. */
+const MIRA_OFFSET_BOCA = TANK_RADIUS + BULLET_RADIUS + 4;
+/** Espessura da linha, em px de MUNDO (a câmera ainda a escala). */
+const MIRA_ESPESSURA = 2;
+/** Trecho junto ao cano que sai mais aceso, para a linha nascer PRESA ao tanque. */
+const MIRA_TRECHO_QUENTE = 34;
+/**
+ * Translucidez baixa de propósito: a linha é ajuda de leitura, não holofote. Nesta faixa ela
+ * some atrás da bala e dos tanques em vez de disputar atenção com eles.
+ */
+const MIRA_ALPHA = 0.22;
+const MIRA_ALPHA_QUENTE = 0.16;
+/** Meia altura do tracinho que marca o ponto de impacto. */
+const MIRA_MARCA_METADE = 6.5;
+
+// ---------------------------------------------------------------------------------------------
+// V2 §1 — A ARENA SE MONTA NA TROCA DE RODADA
+//
+// Antes, `setMaze()` trocava a arena inteira num frame: o placar saía, o jogo voltava e o mapa
+// simplesmente era outro. Agora a arena se MONTA, e a montagem cabe inteira dentro da contagem
+// regressiva que já existia (COUNTDOWN = 3 s) — ela preenche a espera, não a estende.
+//
+// A hierarquia de leitura é PISO → PAREDES → TANQUES, e as paredes surgem em SEQUÊNCIA a partir
+// do centro, cada uma se estendendo pelo próprio eixo longo.
+//
+// Como isso é feito de graça: a máscara. Um único `Graphics` de retângulos serve de máscara de
+// STENCIL para a camada de paredes, e é ele que cresce — a arte das paredes (extrusão, fio de
+// luz, aresta escura) continua sendo exatamente a que `MazeView` já desenhou uma vez. Nada é
+// redesenhado, nenhum passe de tela cheia entra, e no fim da montagem a máscara sai de cena.
+//
+// Por que a máscara em vez de um pop de escala por parede: as paredes vivem TODAS num único
+// `Graphics` dentro de `MazeView` (arquivo que não pertence a esta tarefa), então não existe um
+// nó por parede para escalar. Um `Container` de sprites como máscara também estava fora de
+// questão — máscara que não é `Graphics` vira `AlphaMaskFilter`, ou seja, um passe de tela cheia
+// a mais, exatamente o que o CLAUDE.md limita.
+// ---------------------------------------------------------------------------------------------
+
+/** Quanto o piso leva para entrar. É o primeiro degrau da hierarquia de leitura. */
+const MONTAGEM_PISO_S = 0.26;
+/** Instante em que a primeira parede (a mais próxima do centro) começa a nascer. */
+const MONTAGEM_PAREDES_INICIO_S = 0.12;
+/** Tempo que a onda leva para ir do centro ao canto mais distante da arena. */
+const MONTAGEM_ONDA_S = 0.62;
+/** Tempo que UMA parede leva para se estender por inteiro. */
+const MONTAGEM_PAREDE_S = 0.22;
+const MONTAGEM_TANQUES_INICIO_S = 0.6;
+const MONTAGEM_TANQUES_S = 0.34;
+/** Duração total. Bem abaixo dos 3 s da contagem: a arena tem que estar LEGÍVEL antes do "VAI!". */
+const MONTAGEM_TOTAL_S = 1;
+/** Folga da máscara sobre a silhueta da parede (a extrusão de MazeView sai 4 px a leste, 7 ao sul). */
+const MONTAGEM_PAD = 9;
+/** Sombra das paredes só entra na segunda metade — antes disso ela seria o fantasma do mapa. */
+const MONTAGEM_SOMBRA_INICIO = 0.45;
+
+// ---------------------------------------------------------------------------------------------
+// V2 §2 — A CONFIRMAÇÃO DE ABATE
+//
+// Quem mata não recebia retorno nenhum: a explosão acontece na VÍTIMA, e num jogo de ricochete o
+// autor do tiro muitas vezes nem estava olhando para lá. Agora o matador ganha, no próprio tanque,
+// um "+1" com o nome de quem caiu e um pulso na sua cor.
+//
+// E o autogol — a piada central do jogo — tem tratamento PRÓPRIO: etiqueta vermelha "AUTOGOL!"
+// saindo do tanque de quem se explodiu (de qualquer um: é o momento que faz a sala rir), somada,
+// quando a vítima é o jogador local, ao carimbo do HUD e ao mundo perdendo a cor.
+// ---------------------------------------------------------------------------------------------
+
+/** Quanto tempo o "+1" fica na tela. Curto: é confirmação, não troféu. */
+const ABATE_VIDA_S = 1.05;
+/** Quanto ele sobe, em px de MUNDO. */
+const ABATE_SUBIDA = 38;
+/**
+ * Altura do "+1" acima do centro do tanque. Alto o bastante para o nome da vítima ficar ACIMA da
+ * plaqueta de identidade do próprio tanque, em vez de brigar com ela.
+ */
+const ABATE_ALTURA = 58;
+/** Janela em que um segundo abate vira "+2" em vez de reiniciar a etiqueta. */
+const ABATE_COMBO_S = 0.9;
+const ABATE_ANEL_RAIO = 26;
+const ABATE_ANEL_VIDA_S = 0.42;
+const AUTOGOL_VIDA_S = 1.5;
+const AUTOGOL_SUBIDA = 30;
+/** Altura em que a etiqueta de autogol nasce, acima do centro do tanque. */
+const AUTOGOL_ALTURA = 40;
+/** Cor de alerta da paleta do mundo — a mesma do CLAUDE.md. */
+const COR_AUTOGOL = 0xff3b3b;
+/** Quantas etiquetas de autogol podem estar no ar ao mesmo tempo (mortes simultâneas). */
+const AUTOGOL_POOL = 3;
+
+/** Aceleração/desaceleração cúbica de saída — o assentar de tudo que entra em cena. */
+function saidaCubica(t: number): number {
+  const u = 1 - t;
+  return 1 - u * u * u;
+}
+
 function pickRandom<T>(arr: readonly T[]): T {
   return arr[Math.floor(Math.random() * arr.length)] as T;
 }
@@ -121,6 +226,21 @@ function clamp(v: number, lo: number, hi: number): number {
 /** Aproximação exponencial independente do frame rate. */
 function suavizar(atual: number, alvo: number, dt: number, tau: number): number {
   return atual + (alvo - atual) * (1 - Math.exp(-dt / tau));
+}
+
+/**
+ * Instância viva do `Renderer`.
+ *
+ * Existe UMA por página — este arquivo é o dono do `PIXI.Application`, e criar um segundo já
+ * seria um bug. Publicá-la aqui é o que permite ao HUD (`ui/hud.ts`), que é quem recebe o evento
+ * de abate com matador e vítima, pedir a confirmação no mundo sem que `main.ts` precise ganhar
+ * um parâmetro novo. A dependência ui → render já existe no projeto (o killfeed importa o emblema
+ * de `render/animais.ts`), então nenhuma direção nova de import é criada por causa disto.
+ */
+let instanciaAtiva: Renderer | null = null;
+
+export function rendererAtivo(): Renderer | null {
+  return instanciaAtiva;
 }
 
 interface TankRuntimeState {
@@ -167,6 +287,21 @@ export class Renderer {
    */
   private readonly crosshair = new Graphics();
 
+  /**
+   * Linha de mira do jogador local (ver bloco LINHA DE MIRA acima). Ao contrário da mira do
+   * mouse, esta É um objeto do mundo: nasce na boca do cano e mede uma distância de mundo, então
+   * precisa acompanhar zoom, pan e tremor da câmera.
+   *
+   * Corpo e realce são `Sprite` esticados, não `Graphics`: mudar largura/rotação de um sprite é
+   * só transformação, enquanto redesenhar um `Graphics` reconstrói a geometria e sobe buffer para
+   * a GPU — e isto aqui muda TODO frame.
+   */
+  private readonly miraLayer = new Container();
+  private readonly miraLinha = new Sprite(Texture.WHITE);
+  private readonly miraQuente = new Sprite(Texture.WHITE);
+  /** Tracinho rente à parede no ponto de impacto — é ele que deixa o ÂNGULO legível. */
+  private readonly miraMarca = new Graphics();
+
   private readonly tanks = new Map<string, TankView>();
   private readonly runtime = new Map<string, TankRuntimeState>();
 
@@ -194,7 +329,67 @@ export class Renderer {
   private meY = 0;
   private meCor = 0xffffff;
   private meVivo = false;
+  /** `true` depois que um `sync()` encontrou o meu tanque na cena — antes disso `meCor` é chute. */
+  private meConhecido = false;
+  private meTurret = 0;
   private corDasMarcas = -1;
+
+  /** Ligada por `setLinhaDeMira()`; a morte do jogador ainda a desliga sozinha. */
+  private miraLigada = false;
+  /**
+   * Paredes já INFLADAS pelo raio da bala. É contra esta geometria que a bala ricocheteia na
+   * simulação, então é dela que sai o ponto de impacto certo. Inflar custa um `map` sobre ~100
+   * paredes: acontece uma vez por labirinto, nunca por frame.
+   */
+  private paredesDaBala: Aabb[] = [];
+  private diagonalDoMundo = 1;
+  private corDaMira = -1;
+  /** Pontas do raio, reaproveitadas entre frames — `raycastSegment` só lê estes dois. */
+  private readonly miraDe: Vec2 = { x: 0, y: 0 };
+  private readonly miraPara: Vec2 = { x: 0, y: 0 };
+  /** Último estado já resolvido: com tanque e torre parados o raycast nem chega a rodar. */
+  private miraCacheX = Number.NaN;
+  private miraCacheY = Number.NaN;
+  private miraCacheAng = Number.NaN;
+  /** O que o último cálculo decidiu. Sem isto, um acerto de cache reexibiria geometria velha. */
+  private miraCacheVisivel = false;
+  // --- V2 §1: montagem da arena ---------------------------------------------------------------
+  /** Máscara de stencil da camada de paredes. Só existe enquanto a arena está se montando. */
+  private readonly mascaraParedes = new Graphics();
+  /** Frente de onda da montagem: um anel desenhado UMA vez e só escalado depois. */
+  private readonly ondaMontagem = new Graphics();
+  /**
+   * Geometria da montagem, achatada em 5 números por parede (cx, cy, meiaLargura, meiaAltura,
+   * atraso). Um array plano em vez de objetos porque isto é percorrido inteiro a cada frame da
+   * montagem — não vale gerar ~100 leituras de propriedade por quadro.
+   */
+  private montagemGeo = new Float32Array(0);
+  /** Segundos desde o início da montagem; negativo quando não há montagem em curso. */
+  private montagemT = -1;
+  private montagemQtd = 0;
+  private montagemAlcance = 1;
+  /**
+   * Quanto da entrada dos TANQUES já passou (1 fora da montagem). O anel, a seta e o holofote da
+   * largada moram fora de `entitiesLayer`, então precisam deste fator para não aparecerem
+   * apontando um tanque que ainda não entrou em cena.
+   */
+  private montagemTanques = 1;
+  /** Alpha original da camada de sombra das paredes, para devolvê-lo intacto no fim. */
+  private sombraAlphaBase = -1;
+
+  // --- V2 §2: confirmação de abate --------------------------------------------------------------
+  private readonly abateRoot = new Container();
+  private readonly abateMais: BitmapText;
+  private readonly abateNome: BitmapText;
+  private readonly abateAnel = new Graphics();
+  private abateVida = 0;
+  private abateAnelVida = 0;
+  private abateCombo = 0;
+  private abateX = 0;
+  private abateY = 0;
+  private readonly autogolTags: Array<{ root: Container; vida: number; x: number; y: number }> = [];
+  private autogolProximo = 0;
+
   /** Câmera efetiva (sem o tremor), usada por `screenToWorld` para a mira não errar no zoom. */
   private camScale = 1;
   private camPivotX = 0;
@@ -235,6 +430,18 @@ export class Renderer {
     this.anelLargada.visible = false;
     this.anelLargada.blendMode = 'add';
     this.world.addChild(this.anelLargada);
+    // A linha de mira entra ACIMA das paredes (senão a marca de impacto ficaria escondida atrás
+    // da própria parede que ela aponta) e ABAIXO dos tanques e das balas — nunca por cima deles.
+    // Blend normal, não aditivo: glow é vocabulário de quem EMITE luz, e a linha não emite nada.
+    // Frente de onda da montagem: acima das paredes que ela acabou de revelar, abaixo dos tanques.
+    this.ondaMontagem.blendMode = 'add';
+    this.ondaMontagem.visible = false;
+    this.world.addChild(this.ondaMontagem);
+    // A máscara não é desenhada (o Pixi tira de cena o que vira máscara), mas precisa estar na
+    // árvore para herdar a transformação do mundo — mesmo arranjo do `shadowMask` acima.
+    this.world.addChild(this.mascaraParedes);
+    this.montarLinhaDeMira();
+    this.world.addChild(this.miraLayer);
     this.world.addChild(this.entitiesLayer);
     this.fxLayer.addChild(this.particles.smokeContainer, this.particles.container, this.bullets.container);
     this.world.addChild(this.fxLayer);
@@ -242,6 +449,12 @@ export class Renderer {
     // labelLayer fica por cima da luz — nomes nunca são lavados pelo clarão de um evento.
     this.setaLargada.visible = false;
     this.labelLayer.addChild(this.setaLargada);
+    // Anel do abate entra ANTES das etiquetas: é marca de chão sob o tanque, não auréola.
+    this.abateAnel.visible = false;
+    this.abateAnel.blendMode = 'add';
+    this.fxLayer.addChild(this.abateAnel);
+    this.labelLayer.addChild(this.abateRoot);
+    this.montarEtiquetasDeAutogol();
     this.world.addChild(this.labelLayer);
 
     this.world.filterArea = app.screen;
@@ -251,7 +464,242 @@ export class Renderer {
     this.crosshair.visible = false;
     app.stage.addChild(this.crosshair);
 
+    const confirmacao = this.montarConfirmacaoDeAbate();
+    this.abateMais = confirmacao.mais;
+    this.abateNome = confirmacao.nome;
+
+    instanciaAtiva = this;
     app.ticker.add(() => this.onTick());
+  }
+
+  private montarLinhaDeMira(): void {
+    // Âncora à esquerda e no meio da altura: a origem do sprite fica exatamente na boca do cano,
+    // e esticar `width` faz a linha crescer só para a frente.
+    for (const s of [this.miraLinha, this.miraQuente]) {
+      s.anchor.set(0, 0.5);
+      s.height = MIRA_ESPESSURA;
+    }
+    this.miraLinha.alpha = MIRA_ALPHA;
+    this.miraQuente.alpha = MIRA_ALPHA_QUENTE;
+    this.miraLayer.addChild(this.miraLinha, this.miraQuente, this.miraMarca);
+    this.miraLayer.visible = false;
+  }
+
+  /**
+   * Liga ou desliga a linha de mira do jogador local — só dele: desenhar a dos adversários
+   * entregaria a intenção deles.
+   *
+   * Quem chama só precisa dizer se a RODADA está em andamento; morrer já apaga a linha aqui
+   * dentro, porque o `sync()` sabe se o meu tanque está vivo. Fora da rodada (lobby, contagem,
+   * fim de rodada, fim de partida) é só passar `false`.
+   */
+  setLinhaDeMira(ligada: boolean): void {
+    this.miraLigada = ligada;
+    // Apagar na hora, sem esperar o próximo `sync()`: na vitrine do lobby o `sync()` nem é
+    // chamado, e a linha ficaria congelada na tela.
+    if (!ligada) this.miraLayer.visible = false;
+  }
+
+  /**
+   * Recalcula a linha: do cano até o primeiro toque em parede, e para ali.
+   *
+   * Chamada no fim do `sync()`, não no ticker interno, para a linha usar a MESMA posição de
+   * tanque que foi desenhada neste frame — no ticker ela sairia um frame atrasada e descolaria
+   * visivelmente do cano com o tanque em movimento.
+   *
+   * Sobre lixo de GC: `raycastSegment` devolve um `Hit` novo (3 objetos pequenos) por chamada.
+   * Aqui ele roda no MÁXIMO uma vez por frame, e nem isso quando tanque e torre estão parados —
+   * ~6 KB/s no pior caso, contra os 3,35 MB/s que motivaram a limpeza do slab test na Fase 4.
+   * As pontas do raio (`miraDe`/`miraPara`) e as paredes infladas são reaproveitadas.
+   */
+  private atualizarLinhaDeMira(): void {
+    if (!this.miraLigada || !this.meVivo || this.paredesDaBala.length === 0) {
+      this.miraLayer.visible = false;
+      // Invalida o cache: ao reaparecer, a linha tem de ser recalculada mesmo parada no lugar.
+      this.miraCacheX = Number.NaN;
+      return;
+    }
+
+    const ang = this.meTurret;
+    if (this.meX === this.miraCacheX && this.meY === this.miraCacheY && ang === this.miraCacheAng) {
+      this.miraLayer.visible = this.miraCacheVisivel;
+      return;
+    }
+    this.miraCacheX = this.meX;
+    this.miraCacheY = this.meY;
+    this.miraCacheAng = ang;
+    this.miraCacheVisivel = false;
+
+    const dx = Math.cos(ang);
+    const dy = Math.sin(ang);
+    // O raio parte do CENTRO do tanque, não da boca: assim ele também pega o caso de estar
+    // encostado numa parede com a torre virada para ela — o mesmo cuidado que `stepTanks` tem
+    // antes de fazer a bala nascer. `circleVsAabbSlide` garante que o centro nunca está dentro
+    // de uma parede inflada (TANK_RADIUS > BULLET_RADIUS), então o raio nunca começa por dentro.
+    this.miraDe.x = this.meX;
+    this.miraDe.y = this.meY;
+    this.miraPara.x = this.meX + dx * this.diagonalDoMundo;
+    this.miraPara.y = this.meY + dy * this.diagonalDoMundo;
+
+    const hit = raycastSegment(this.miraDe, this.miraPara, this.paredesDaBala);
+    const comprimento = (hit?.distance ?? 0) - MIRA_OFFSET_BOCA;
+    // Sem parede à frente (impossível dentro da borda do labirinto) ou cano colado nela: nada a
+    // mostrar — uma linha de 2 px só sujaria o tanque.
+    if (!hit || comprimento < 1) {
+      this.miraLayer.visible = false;
+      return;
+    }
+
+    this.redesenharLinhaDeMira(this.meCor);
+    this.miraCacheVisivel = true;
+    this.miraLayer.visible = true;
+
+    const bocaX = this.meX + dx * MIRA_OFFSET_BOCA;
+    const bocaY = this.meY + dy * MIRA_OFFSET_BOCA;
+    this.miraLinha.position.set(bocaX, bocaY);
+    this.miraLinha.rotation = ang;
+    this.miraLinha.width = comprimento;
+    this.miraQuente.position.set(bocaX, bocaY);
+    this.miraQuente.rotation = ang;
+    this.miraQuente.width = Math.min(MIRA_TRECHO_QUENTE, comprimento);
+
+    this.miraMarca.position.set(hit.point.x, hit.point.y);
+    // Girar pela NORMAL deixa o tracinho rente à parede: é o que dá a leitura do ângulo de saída.
+    this.miraMarca.rotation = Math.atan2(hit.normal.y, hit.normal.x);
+  }
+
+  /** Repinta linha e marca na cor de quem está jogando. Uma vez por cor, nunca por frame. */
+  private redesenharLinhaDeMira(cor: number): void {
+    if (this.corDaMira === cor) return;
+    this.corDaMira = cor;
+    // Clarear a cor do jogador iguala a leitura das 10 sobre o piso azul-ardósia: os tons mais
+    // fechados da paleta (índigo, roxo) sumiriam nesta translucidez, os já claros mal mudam.
+    const tinta = lighten(cor, 0.45);
+    this.miraLinha.tint = tinta;
+    this.miraQuente.tint = tinta;
+
+    const g = this.miraMarca;
+    g.clear();
+    g.moveTo(0, -MIRA_MARCA_METADE).lineTo(0, MIRA_MARCA_METADE).stroke({ width: 2, color: tinta, alpha: 0.5 });
+    g.circle(0, 0, 1.9).fill({ color: tinta, alpha: 0.62 });
+  }
+
+  /**
+   * Monta a etiqueta de confirmação de abate — "+1" gordo na cor de quem matou, com o nome da
+   * vítima logo abaixo, na cor DELA — e o anel do pulso que a acompanha.
+   *
+   * `BitmapText` e não `Text`: a etiqueta vive dentro do mundo e reaparece a cada abate, e um
+   * `Text` novo por morte significaria gerar uma textura no frame mais cheio do jogo — o mesmo
+   * motivo pelo qual o nome sobre o tanque já é `BitmapText`. Aqui os dois nós são criados uma
+   * única vez e depois só trocam texto, cor e posição.
+   */
+  private montarConfirmacaoDeAbate(): { mais: BitmapText; nome: BitmapText } {
+    const mais = new BitmapText({
+      text: '+1',
+      style: { fontFamily: 'Chakra Petch', fontSize: 26, fontWeight: '700', fill: 0xffffff, stroke: { color: 0x0a0e18, width: 5 } },
+    });
+    mais.anchor.set(0.5, 1);
+    const nome = new BitmapText({
+      text: '',
+      style: { fontFamily: 'Sora', fontSize: 12, fontWeight: '700', fill: 0xffffff, stroke: { color: 0x0a0e18, width: 4 }, letterSpacing: 0.6 },
+    });
+    nome.anchor.set(0.5, 0);
+    nome.y = 2;
+    this.abateRoot.addChild(mais, nome);
+    this.abateRoot.visible = false;
+    // Traço fino de propósito: o anel é ESCALADO na animação, e a espessura cresce junto — a 1,7×
+    // um traço grosso viraria um disco.
+    this.abateAnel.circle(0, 0, ABATE_ANEL_RAIO).stroke({ width: 2.6, color: 0xffffff, alpha: 0.9 });
+    return { mais, nome };
+  }
+
+  /**
+   * Etiquetas de "AUTOGOL!". Um punhado reaproveitado em rodízio: duas pessoas podem se explodir
+   * no mesmo tick, e criar nó por evento seria alocar exatamente no frame da explosão.
+   */
+  private montarEtiquetasDeAutogol(): void {
+    for (let i = 0; i < AUTOGOL_POOL; i++) {
+      const root = new Container();
+      const texto = new BitmapText({
+        text: 'AUTOGOL!',
+        style: {
+          fontFamily: 'Chakra Petch',
+          fontSize: 19,
+          fontWeight: '700',
+          fill: COR_AUTOGOL,
+          stroke: { color: 0x0a0e18, width: 5 },
+          letterSpacing: 1.4,
+        },
+      });
+      texto.anchor.set(0.5, 0.5);
+      root.addChild(texto);
+      root.visible = false;
+      this.labelLayer.addChild(root);
+      this.autogolTags.push({ root, vida: 0, x: 0, y: 0 });
+    }
+  }
+
+  /**
+   * `true` quando `cor` é a do tanque do jogador local. É por aqui que o HUD descobre se o abate
+   * que acabou de entrar no killfeed foi DELE — a cor é única por jogador dentro de uma partida,
+   * ao contrário do nome, que ninguém impede de repetir.
+   */
+  souOJogadorLocal(cor: number): boolean {
+    return this.meConhecido && cor === this.meCor;
+  }
+
+  /**
+   * Confirmação de abate para o jogador local: "+1" com o nome da vítima subindo do próprio
+   * tanque e um pulso na cor de quem matou. Dois abates seguidos viram "+2" em vez de reiniciar
+   * a etiqueta do zero — num ricochete duplo o número é a informação, não a repetição.
+   */
+  confirmarAbate(vitimaNome: string, vitimaCor: number): void {
+    this.abateCombo = this.abateVida > ABATE_VIDA_S - ABATE_COMBO_S ? this.abateCombo + 1 : 1;
+    this.abateVida = ABATE_VIDA_S;
+    this.abateAnelVida = ABATE_ANEL_VIDA_S;
+    this.abateX = this.meX;
+    this.abateY = this.meY;
+
+    const texto = '+' + this.abateCombo;
+    if (this.abateMais.text !== texto) this.abateMais.text = texto;
+    if (this.abateNome.text !== vitimaNome) this.abateNome.text = vitimaNome;
+    this.abateMais.tint = lighten(this.meCor, 0.3);
+    this.abateNome.tint = lighten(vitimaCor, 0.25);
+    this.abateAnel.tint = this.meCor;
+    this.abateRoot.visible = true;
+    this.abateRoot.alpha = 1;
+    this.abateRoot.scale.set(0.55);
+    this.abateAnel.visible = true;
+    this.abateAnel.alpha = 0.85;
+    this.abateAnel.scale.set(0.45);
+    this.abateRoot.position.set(this.abateX, this.abateY - ABATE_ALTURA);
+    this.abateAnel.position.set(this.abateX, this.abateY);
+  }
+
+  /**
+   * Etiqueta de autogol sobre o tanque de quem se explodiu — de QUALQUER jogador. A posição sai
+   * do próprio tanque (achado pela cor, que é única na partida); sem ele em cena, a etiqueta é
+   * descartada em silêncio, porque um "AUTOGOL!" flutuando no vazio não conta piada nenhuma.
+   */
+  marcarAutogol(vitimaCor: number): void {
+    let alvo: TankView | null = null;
+    for (const tank of this.tanks.values()) {
+      if (tank.color === vitimaCor) {
+        alvo = tank;
+        break;
+      }
+    }
+    if (!alvo) return;
+    const tag = this.autogolTags[this.autogolProximo % this.autogolTags.length];
+    if (!tag) return;
+    this.autogolProximo += 1;
+    tag.vida = AUTOGOL_VIDA_S;
+    tag.x = alvo.root.x;
+    tag.y = alvo.root.y - AUTOGOL_ALTURA;
+    tag.root.visible = true;
+    tag.root.position.set(tag.x, tag.y);
+    tag.root.scale.set(0.6);
+    tag.root.alpha = 1;
   }
 
   // Crosshair procedural discreto: quatro traços curtos afastados do centro (o alvo fica
@@ -325,12 +773,27 @@ export class Renderer {
   }
 
   setMaze(maze: Maze): void {
+    // A morte súbita remove UMA parede e repassa o MESMO objeto de labirinto; só um labirinto
+    // novo (rodada nova) manda a arena se montar outra vez. Sem esta comparação a arena inteira
+    // se remontaria no meio do tiroteio.
+    const outroLabirinto = maze !== this.currentMaze;
     this.currentMaze = maze;
     this.worldWidth = maze.cols * maze.cell;
     this.worldHeight = maze.rows * maze.cell;
 
     this.mazeView.setMaze(maze);
     this.shadowMask.clear().rect(0, 0, this.worldWidth, this.worldHeight).fill(0xffffff);
+    // Geometria da linha de mira, montada uma vez por labirinto (ver `atualizarLinhaDeMira`).
+    // A diagonal é o comprimento máximo do raio: dentro da borda do labirinto ela sempre alcança
+    // uma parede, venha o tiro de onde vier.
+    this.paredesDaBala = maze.walls.map((w) => ({
+      x: w.x - BULLET_RADIUS,
+      y: w.y - BULLET_RADIUS,
+      w: w.w + BULLET_RADIUS * 2,
+      h: w.h + BULLET_RADIUS * 2,
+    }));
+    this.diagonalDoMundo = Math.hypot(this.worldWidth, this.worldHeight);
+    this.miraCacheX = Number.NaN;
     // Enquadrar ANTES de recriar os decalques: a textura deles é dimensionada pela escala da
     // câmera, e a escala só existe depois do `fitCamera` do labirinto novo. Fora de ordem, uma
     // arena ultrawide (câmera ~2,1×) ganharia uma textura de decalque na escala da rodada
@@ -338,6 +801,10 @@ export class Renderer {
     this.fitCamera();
     this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
     this.particles.setWorldBounds(this.worldWidth, this.worldHeight);
+    if (outroLabirinto) this.iniciarMontagem(maze);
+    // A rodada nova devolve a cor: mesmo que o `sync()` da partida anterior tenha deixado o mundo
+    // cinza, o labirinto novo já começa colorido (ver V2 §3).
+    this.post.setMundoCinza(false);
     // Nota: `runtime` (odômetro/wasAlive por tanque) NÃO é limpo aqui — os tanques em si
     // continuam existindo entre rounds (mesmos ids). Limpar o Map faria sync() reencontrar
     // `!rt` para tanques já existentes e criar TankView duplicadas por cima das antigas.
@@ -347,6 +814,8 @@ export class Renderer {
   sync(view: RenderView): void {
     this.meId = view.me;
     this.meVivo = false;
+    this.meConhecido = false;
+    let algumAdversarioVivo = false;
     const seenIds = new Set<string>();
 
     for (const t of view.tanks) {
@@ -356,6 +825,10 @@ export class Renderer {
         this.meY = t.y;
         this.meCor = t.color;
         this.meVivo = t.alive;
+        this.meConhecido = true;
+        this.meTurret = t.turret;
+      } else if (t.alive) {
+        algumAdversarioVivo = true;
       }
       let tankView = this.tanks.get(t.id);
       let rt = this.runtime.get(t.id);
@@ -401,6 +874,12 @@ export class Renderer {
     }
 
     this.bullets.sync(view.bullets);
+    this.atualizarLinhaDeMira();
+
+    // V2 §3: o mundo perde a cor enquanto EU estou eliminado e a rodada continua sem mim. Exigir
+    // um adversário vivo é o que atende à regra "no fim de partida, com todo mundo morto, o mundo
+    // não fica cinza" — ali quem manda é a tela de resultado.
+    this.post.setMundoCinza(this.meConhecido && !this.meVivo && algumAdversarioVivo);
   }
 
   onShot(x: number, y: number, angle: number, color: number): void {
@@ -684,16 +1163,16 @@ export class Renderer {
       const pulso = 0.5 + 0.5 * Math.sin(this.tempoLargada * 5.4);
       this.holofoteLargada.position.set(this.meX, this.meY);
       this.holofoteLargada.tint = this.meCor;
-      this.holofoteLargada.alpha = this.focoMarca * (0.42 + 0.2 * pulso);
+      this.holofoteLargada.alpha = this.focoMarca * this.montagemTanques * (0.42 + 0.2 * pulso);
       this.anelLargada.position.set(this.meX, this.meY);
       this.anelLargada.scale.set(0.86 + 0.2 * pulso);
-      this.anelLargada.alpha = this.focoMarca * (0.5 + 0.5 * pulso);
+      this.anelLargada.alpha = this.focoMarca * this.montagemTanques * (0.5 + 0.5 * pulso);
 
       const acima = this.meY > SETA_DIST + 10;
       const salto = pulso * 5;
       this.setaLargada.position.set(this.meX, this.meY + (acima ? -SETA_DIST - salto : SETA_DIST + salto));
       this.setaLargada.rotation = acima ? 0 : Math.PI;
-      this.setaLargada.alpha = this.focoMarca;
+      this.setaLargada.alpha = this.focoMarca * this.montagemTanques;
     }
 
     // Esmaecer os adversários é o que faz o meu SALTAR sem precisar de mais efeito nenhum.
@@ -705,6 +1184,159 @@ export class Renderer {
         tank.label.alpha = alvo;
         tank.shadow.alpha = 0.4 * alvo;
       }
+    }
+  }
+
+  /**
+   * Prepara a montagem da arena (V2 §1): mede cada parede, sorteia o atraso dela pela distância
+   * até o centro e zera as camadas que vão entrar em sequência.
+   *
+   * O custo acontece UMA vez por rodada, não por frame: o laço por frame só lê este `Float32Array`.
+   */
+  private iniciarMontagem(maze: Maze): void {
+    const centroX = this.worldWidth / 2;
+    const centroY = this.worldHeight / 2;
+    const n = maze.walls.length;
+    if (this.montagemGeo.length < n * 5) this.montagemGeo = new Float32Array(n * 5);
+    const geo = this.montagemGeo;
+    this.montagemAlcance = Math.max(1, Math.hypot(centroX, centroY));
+
+    for (let i = 0; i < n; i++) {
+      const w = maze.walls[i]!;
+      const wx = w.x + w.w / 2;
+      const wy = w.y + w.h / 2;
+      const o = i * 5;
+      // O centro é deslocado por METADE da extrusão de `MazeView` (4 px a leste, 7 ao sul): é a
+      // silhueta extrudada que aparece na tela, não o AABB da colisão.
+      geo[o] = wx + 2;
+      geo[o + 1] = wy + 3.5;
+      geo[o + 2] = w.w / 2 + MONTAGEM_PAD;
+      geo[o + 3] = w.h / 2 + MONTAGEM_PAD;
+      geo[o + 4] = Math.min(1, Math.hypot(wx - centroX, wy - centroY) / this.montagemAlcance) * MONTAGEM_ONDA_S;
+    }
+
+    this.montagemQtd = n;
+    this.montagemT = 0;
+    this.montagemTanques = 0;
+    this.mascaraParedes.clear();
+    this.mazeView.wallLayer.mask = this.mascaraParedes;
+    if (this.sombraAlphaBase < 0) this.sombraAlphaBase = this.mazeView.wallShadowLayer.alpha;
+    this.mazeView.floorLayer.alpha = 0;
+    this.mazeView.wallShadowLayer.alpha = 0;
+    this.entitiesLayer.alpha = 0;
+    this.labelLayer.alpha = 0;
+  }
+
+  /**
+   * Um frame da montagem. Piso, paredes e tanques têm janelas de tempo próprias — é a hierarquia
+   * de leitura que dá sentido à espera: primeiro o chão, depois o labirinto, os tanques por último.
+   *
+   * O laço reconstrói a máscara inteira a cada frame. São ~100 retângulos num ÚNICO `fill()`,
+   * durante 1 s por rodada e num momento em que a simulação está parada (ninguém anda nem atira
+   * na contagem) — o orçamento de frame nesse trecho está praticamente vazio.
+   */
+  private atualizarMontagem(dt: number): void {
+    if (this.montagemT < 0) return;
+    this.montagemT += dt;
+    const t = this.montagemT;
+
+    this.mazeView.floorLayer.alpha = clamp01(t / MONTAGEM_PISO_S);
+
+    const g = this.mascaraParedes;
+    const geo = this.montagemGeo;
+    g.clear();
+    for (let i = 0; i < this.montagemQtd; i++) {
+      const o = i * 5;
+      const k = clamp01((t - MONTAGEM_PAREDES_INICIO_S - geo[o + 4]!) / MONTAGEM_PAREDE_S);
+      if (k <= 0) continue;
+      const e = saidaCubica(k);
+      const hw = geo[o + 2]!;
+      const hh = geo[o + 3]!;
+      // Cresce só pelo eixo LONGO: a parede se ESTENDE a partir do meio, como uma peça deslizando
+      // para o lugar. Crescer pelos dois eixos a faria inchar, que lê como balão, não como obra.
+      const fx = hw >= hh ? e : 1;
+      const fy = hw >= hh ? 1 : e;
+      g.rect(geo[o]! - hw * fx, geo[o + 1]! - hh * fy, hw * 2 * fx, hh * 2 * fy);
+    }
+    g.fill(0xffffff);
+
+    // Frente de onda: um anel quente que passa por cima das paredes no instante em que elas
+    // nascem. É o que dá CAUSA à sequência — sem ele as paredes só apareceriam sozinhas.
+    const onda = clamp01((t - MONTAGEM_PAREDES_INICIO_S) / MONTAGEM_ONDA_S);
+    const acesa = onda > 0 && onda < 1;
+    this.ondaMontagem.visible = acesa;
+    if (acesa) {
+      this.ondaMontagem
+        .clear()
+        .circle(this.worldWidth / 2, this.worldHeight / 2, 10 + onda * this.montagemAlcance)
+        .stroke({ width: 5, color: WORLD_COLORS.warmLight, alpha: Math.sin(Math.PI * onda) * 0.4 });
+    }
+
+    const sombra = clamp01((t - MONTAGEM_SOMBRA_INICIO) / (MONTAGEM_TOTAL_S - MONTAGEM_SOMBRA_INICIO));
+    this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase * sombra;
+
+    this.montagemTanques = clamp01((t - MONTAGEM_TANQUES_INICIO_S) / MONTAGEM_TANQUES_S);
+    this.entitiesLayer.alpha = this.montagemTanques;
+    this.labelLayer.alpha = this.montagemTanques;
+
+    if (t < MONTAGEM_TOTAL_S) return;
+
+    // Fim: a máscara sai de cena (com ela vazia, o `Graphics` que volta a ser desenhável não
+    // desenha nada) e todas as camadas voltam ao valor de regime.
+    this.montagemT = -1;
+    this.montagemTanques = 1;
+    this.mazeView.wallLayer.mask = null;
+    this.mascaraParedes.clear();
+    this.ondaMontagem.visible = false;
+    this.mazeView.floorLayer.alpha = 1;
+    this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase;
+    this.entitiesLayer.alpha = 1;
+    this.labelLayer.alpha = 1;
+    // A arena ASSENTA. O tranco é curto e cai ainda dentro da contagem, longe do primeiro tiro.
+    this.juice.addTrauma(0.16);
+  }
+
+  /**
+   * Um frame das confirmações de abate (V2 §2): a etiqueta "+N" do jogador local, o pulso na cor
+   * dele e as etiquetas de autogol de quem quer que seja.
+   *
+   * Tudo aqui é transformação de nós que já existem — nenhum objeto nasce no frame da morte, que
+   * é justamente o mais cheio do jogo.
+   */
+  private atualizarConfirmacoes(dt: number): void {
+    if (this.abateVida > 0) {
+      this.abateVida = Math.max(0, this.abateVida - dt);
+      const k = 1 - this.abateVida / ABATE_VIDA_S;
+      this.abateRoot.position.set(this.abateX, this.abateY - ABATE_ALTURA - ABATE_SUBIDA * saidaCubica(k));
+      // Entra estourando e assenta: é o gesto que faz o número ser LIDO antes de começar a subir.
+      const escala = k < 0.12 ? 0.55 + 5.25 * k : k < 0.3 ? 1.18 - ((k - 0.12) / 0.18) * 0.18 : 1;
+      this.abateRoot.scale.set(escala);
+      this.abateRoot.alpha = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
+      if (this.abateVida === 0) {
+        this.abateRoot.visible = false;
+        this.abateCombo = 0;
+      }
+    }
+
+    if (this.abateAnelVida > 0) {
+      this.abateAnelVida = Math.max(0, this.abateAnelVida - dt);
+      const k = 1 - this.abateAnelVida / ABATE_ANEL_VIDA_S;
+      this.abateAnel.scale.set(0.45 + 1.25 * saidaCubica(k));
+      this.abateAnel.alpha = (1 - k) * 0.85;
+      if (this.abateAnelVida === 0) this.abateAnel.visible = false;
+    }
+
+    for (const tag of this.autogolTags) {
+      if (tag.vida <= 0) continue;
+      tag.vida = Math.max(0, tag.vida - dt);
+      const k = 1 - tag.vida / AUTOGOL_VIDA_S;
+      tag.root.position.set(tag.x, tag.y - AUTOGOL_SUBIDA * saidaCubica(k));
+      // Tremidinha de desenho animado, decrescente. É o que separa o autogol de um abate comum
+      // antes mesmo de a pessoa ler a palavra.
+      tag.root.rotation = Math.sin(k * 38) * 0.1 * (1 - k);
+      tag.root.scale.set(k < 0.14 ? 0.5 + 4.57 * k : Math.max(1, 1.14 - ((k - 0.14) / 0.16) * 0.14));
+      tag.root.alpha = k < 0.66 ? 1 : Math.max(0, 1 - (k - 0.66) / 0.34);
+      if (tag.vida === 0) tag.root.visible = false;
     }
   }
 
@@ -806,7 +1438,13 @@ export class Renderer {
 
     this.decals.flush(this.app.renderer);
 
-    this.atualizarLargada(deltaMs / 1000);
+    const dtRealS = deltaMs / 1000;
+    this.atualizarMontagem(dtRealS);
+    this.atualizarLargada(dtRealS);
+    this.atualizarConfirmacoes(dtRealS);
+    // Drenagem de cor em tempo REAL: o hitstop da morte congela o mundo por 60 ms e a cor tem que
+    // continuar saindo por baixo dele.
+    this.post.atualizarCor(dtRealS);
 
     const shake = this.juice.getShake();
     this.camScale = this.baseScale * (1 + LARGADA_ZOOM * this.focoZoom);

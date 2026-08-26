@@ -586,6 +586,9 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
     // Ache o seu tanque (Fase 11): o Renderer recebe só o relógio da contagem e cuida sozinho do
     // zoom, do anel, da seta e do esmaecimento dos adversários.
     renderer.setLargada(fase === 'countdown' ? countdownLeft : null);
+    // Linha de mira (Fase A3): só na rodada em andamento e só para o jogador local. O Renderer
+    // apaga sozinha quando o meu tanque morre.
+    renderer.setLinhaDeMira(fase === 'playing');
 
     const mostrandoVai = agora < vaiAte;
     if (
@@ -1306,6 +1309,9 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     setAudioAtivo(emJogo);
     // Mesma chamada do modo local: aqui o relógio da contagem é o `timeLeft` do estado frio.
     renderer.setLargada(conectado && fase === 'countdown' ? timeLeft : null);
+    // Linha de mira (Fase A3): só na rodada em andamento e só para o jogador local. O Renderer
+    // apaga sozinha quando o meu tanque morre.
+    renderer.setLinhaDeMira(conectado && fase === 'playing' && !vitrine);
 
     const mostrandoVai = agora < vaiAte;
     if (

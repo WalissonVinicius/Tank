@@ -778,6 +778,99 @@ body.em-jogo #btn-tela-cheia {
   }
 }
 
+/* ----- carimbo de AUTOGOL (V2 §2) -----
+   O autogol é a piada central do jogo e não podia ler igual a uma morte comum. Ele CARIMBA:
+   entra grande demais, bate no lugar e treme, exatamente como um carimbo de borracha.
+   Vive no HUD (DOM) porque no mesmo instante o mundo atrás perde a cor — este vermelho é o
+   único que sobra na tela, e é ele que conta a piada. */
+#hud-autogol {
+  position: absolute;
+  left: 50%;
+  top: 38%;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: calc(var(--k) * 8px);
+  transform: translate(-50%, -50%);
+  transform-origin: 50% 50%;
+}
+
+#hud-autogol.ativa {
+  display: flex;
+  animation: carimbo-bate 2200ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+}
+
+#hud-autogol .placa {
+  padding: calc(var(--k) * 8px) calc(var(--k) * 26px) calc(var(--k) * 10px);
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 46px);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  color: var(--creme);
+  text-shadow: var(--contorno);
+  background: var(--vermelho);
+  border: calc(var(--k) * 4px) solid var(--traco);
+  border-radius: calc(var(--k) * 16px);
+  box-shadow: 0 calc(var(--k) * 7px) 0 var(--traco);
+  transform: rotate(-5deg);
+}
+
+#hud-autogol .sub {
+  font-family: var(--fd);
+  font-size: calc(var(--k) * 15px);
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--creme);
+  text-shadow: var(--contorno-fino);
+  transform: rotate(-2deg);
+}
+
+/* Chega de cima, grande, e bate; os dois solavancos depois do impacto são o carimbo assentando.
+   A saída é só opacidade — o jogador está morto e a tela já é do próximo momento. */
+@keyframes carimbo-bate {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.6) rotate(9deg);
+  }
+  9% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(0.9) rotate(-4deg);
+  }
+  14% {
+    transform: translate(-50%, -50%) scale(1.09) rotate(3deg);
+  }
+  20% {
+    transform: translate(-50%, -50%) scale(0.97) rotate(-2deg);
+  }
+  26%,
+  74% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1) rotate(0deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(1.04) rotate(0deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #hud-autogol.ativa {
+    animation: carimbo-simples 2200ms linear both;
+  }
+
+  @keyframes carimbo-simples {
+    0%,
+    88% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}
+
 #hud-reconectando {
   position: absolute;
   left: 50%;
