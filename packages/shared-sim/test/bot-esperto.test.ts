@@ -167,16 +167,17 @@ describe('bot — freio de autogol', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// O confronto pedido: 100 partidas com seeds diferentes, difícil × fácil
+// Os confrontos pedidos: 100 partidas com seeds diferentes para cada par de dificuldades
 // ---------------------------------------------------------------------------------------------
 
 const TICKS_POR_DUELO = 25 * TICK_HZ;
+type Nivel = keyof typeof BOT_DIFFICULTY;
 
-function duelo(seed: number, trocarLados: boolean): 'dificil' | 'facil' | 'empate' {
+function duelo(seed: number, trocarLados: boolean, adversario: 'facil' | 'medio'): Nivel | 'empate' {
   const maze = makeMaze(seed, 2);
   const rng = mulberry32((seed * 2654435761) >>> 0);
   const pontos = spawnPoints(maze, 2, rng);
-  const ordem: ('dificil' | 'facil')[] = trocarLados ? ['facil', 'dificil'] : ['dificil', 'facil'];
+  const ordem: Nivel[] = trocarLados ? [adversario, 'dificil'] : ['dificil', adversario];
 
   const tanks = new Map<string, Tank>();
   const cerebros = new Map<string, Bot>();
@@ -203,20 +204,20 @@ function duelo(seed: number, trocarLados: boolean): 'dificil' | 'facil' | 'empat
     state.tick += 1;
 
     const vivos = [...tanks.values()].filter((t) => t.alive);
-    if (vivos.length <= 1) return vivos.length === 1 ? (vivos[0]!.id as 'dificil' | 'facil') : 'empate';
+    if (vivos.length <= 1) return vivos.length === 1 ? (vivos[0]!.id as Nivel) : 'empate';
   }
   return 'empate';
 }
 
 describe('bot difícil × bot fácil — 100 duelos com seeds diferentes', () => {
-  it('o difícil vence a maioria', () => {
+  it('o difícil vence pelo menos 85 partidas', () => {
     let dificil = 0;
     let facil = 0;
     let empates = 0;
 
     for (let i = 0; i < 100; i++) {
       // Lados trocados em metade das seeds: assim nenhuma vantagem vem do ponto de nascimento.
-      const r = duelo(1000 + i * 37, i % 2 === 1);
+      const r = duelo(1000 + i * 37, i % 2 === 1, 'facil');
       if (r === 'dificil') dificil += 1;
       else if (r === 'facil') facil += 1;
       else empates += 1;
@@ -225,8 +226,26 @@ describe('bot difícil × bot fácil — 100 duelos com seeds diferentes', () =>
     // `shared-sim` compila sem `lib: dom` e sem os tipos do Node (é matemática pura), então o
     // `console` do runner vem pelo `globalThis` — o pacote continua sem depender de ambiente.
     const saida = (globalThis as { console?: { log(mensagem: string): void } }).console;
-    saida?.log(`[Fase 13] duelo 100 partidas — difícil ${dificil} × fácil ${facil} (empates ${empates})`);
-    expect(dificil).toBeGreaterThan(facil);
-    expect(dificil + facil).toBeGreaterThan(40);
+    saida?.log(`[bot esperto] duelo 100 partidas — difícil ${dificil} × fácil ${facil} (empates ${empates})`);
+    expect(dificil).toBeGreaterThanOrEqual(85);
+  });
+});
+
+describe('bot difícil × bot médio — 100 duelos com seeds diferentes', () => {
+  it('o difícil vence pelo menos 70 partidas', () => {
+    const saida = (globalThis as { console?: { log(mensagem: string): void } }).console;
+    let dificil = 0;
+    let medio = 0;
+    let empates = 0;
+
+    for (let i = 0; i < 100; i++) {
+      const r = duelo(1000 + i * 37, i % 2 === 1, 'medio');
+      if (r === 'dificil') dificil += 1;
+      else if (r === 'medio') medio += 1;
+      else empates += 1;
+    }
+
+    saida?.log(`[bot esperto] duelo 100 partidas — difícil ${dificil} × médio ${medio} (empates ${empates})`);
+    expect(dificil).toBeGreaterThanOrEqual(70);
   });
 });

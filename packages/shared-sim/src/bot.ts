@@ -7,12 +7,14 @@ import {
   MAX_BOUNCES,
   SELF_IMMUNITY,
   TANK_RADIUS,
+  TANK_SPEED,
+  TICK_HZ,
   TURRET_RATE,
 } from '@tank/protocol';
 import { circleVsAabbSlide, hasLineOfSight, raycastSegment, reflect } from './collision.js';
 import { nextStepTowards } from './maze.js';
 import type { Rng } from './rng.js';
-import type { Bullet, Input, Maze, Tank, Vec2 } from './types.js';
+import type { Aabb, Bullet, Input, Maze, Tank, Vec2 } from './types.js';
 
 /**
  * Capacidades do bot, ligadas por dificuldade (Fase 13 §4). Não é sistema de configuração: são
@@ -37,7 +39,7 @@ export interface BotConfig {
 export const BOT_DIFFICULTY: Record<'facil' | 'medio' | 'dificil', BotConfig> = {
   facil: { aimErrorRad: 0.35, turnThreshold: 0.25, desvia: true, ricocheteia: false, evitaAutogol: false, usaParede: false },
   medio: { aimErrorRad: 0.18, turnThreshold: 0.15, desvia: true, ricocheteia: true, evitaAutogol: true, usaParede: false },
-  dificil: { aimErrorRad: 0.04, turnThreshold: 0.12, desvia: true, ricocheteia: true, evitaAutogol: true, usaParede: true },
+  dificil: { aimErrorRad: 0.005, turnThreshold: 0.04, desvia: true, ricocheteia: true, evitaAutogol: true, usaParede: true },
 };
 
 /** O que o bot enxerga além do labirinto e do inimigo. Ausente = ele decide só com a geometria. */
@@ -65,6 +67,22 @@ const RAIO_ACERTO = TANK_RADIUS + BULLET_RADIUS;
 const VOO_ATE_FICAR_LETAL = SELF_IMMUNITY * BULLET_SPEED;
 /** Offset da boca do cano, igual ao de `stepTanks` em sim.ts — a bala nasce daqui, não do centro. */
 const OFFSET_DA_BOCA = TANK_RADIUS + BULLET_RADIUS + 4;
+
+const paredesDaBalaPorLabirinto = new WeakMap<Maze, readonly Aabb[]>();
+
+/** Mesma expansão usada por `stepTanks` e `stepBullets`, calculada uma vez por labirinto. */
+function paredesParaBala(maze: Maze): readonly Aabb[] {
+  const existentes = paredesDaBalaPorLabirinto.get(maze);
+  if (existentes) return existentes;
+  const infladas = maze.walls.map((parede) => ({
+    x: parede.x - BULLET_RADIUS,
+    y: parede.y - BULLET_RADIUS,
+    w: parede.w + BULLET_RADIUS * 2,
+    h: parede.h + BULLET_RADIUS * 2,
+  }));
+  paredesDaBalaPorLabirinto.set(maze, infladas);
+  return infladas;
+}
 
 interface Trecho {
   x0: number;
@@ -99,9 +117,8 @@ function empurrarTrecho(x0: number, y0: number, x1: number, y1: number, d0: numb
  * Percorre a trajetória de um tiro saído de (`ox`,`oy`) no ângulo `angulo`, refletindo nas
  * paredes até `MAX_BOUNCES` e parando no alcance da bala. O resultado fica em `trechos`.
  *
- * Usa as paredes CRUAS (não infladas pelo raio da bala como a simulação faz): a diferença é de
- * ~4 px no ponto de impacto, invisível para uma heurística de mira, e evita duplicar o cache de
- * paredes infladas do `sim.ts` aqui dentro.
+ * Usa as paredes infladas pelo raio da bala, exatamente como a simulação. Elas ficam num cache
+ * por labirinto para que a precisão extra não recrie a geometria a cada tentativa de mira.
  */
 function tracarTiro(ox: number, oy: number, angulo: number, maze: Maze): void {
   nTrechos = 0;
@@ -115,13 +132,14 @@ function tracarTiro(ox: number, oy: number, angulo: number, maze: Maze): void {
 
   const de: Vec2 = { x: 0, y: 0 };
   const para: Vec2 = { x: 0, y: 0 };
+  const paredes = paredesParaBala(maze);
 
   while (restante > 1 && nTrechos <= MAX_BOUNCES + 1) {
     de.x = x;
     de.y = y;
     para.x = x + dx * restante;
     para.y = y + dy * restante;
-    const hit = raycastSegment(de, para, maze.walls);
+    const hit = raycastSegment(de, para, paredes);
     if (!hit) {
       empurrarTrecho(x, y, para.x, para.y, percorrido);
       return;
@@ -175,8 +193,24 @@ function distanciaAteATrajetoria(px: number, py: number, voarPeloMenos: number):
 
 /** Distância entre a trajetória de um tiro nesse ângulo e o alvo — quanto menor, melhor a mira. */
 function erroDoTiro(tank: Tank, angulo: number, alvo: Vec2, maze: Maze): number {
-  tracarTiro(tank.x + Math.cos(angulo) * OFFSET_DA_BOCA, tank.y + Math.sin(angulo) * OFFSET_DA_BOCA, angulo, maze);
+  tracarTiroDoTanque(tank, angulo, maze);
   return distanciaAteATrajetoria(alvo.x, alvo.y, 0);
+}
+
+/**
+ * Traça desde o ponto onde a bala realmente nascerá. Quando o cano atravessa uma parede inflada,
+ * `stepTanks` recorta centro→boca e encosta a bala do lado interno antes do primeiro movimento.
+ */
+function tracarTiroDoTanque(tank: Tank, angulo: number, maze: Maze): void {
+  const boca = {
+    x: tank.x + Math.cos(angulo) * OFFSET_DA_BOCA,
+    y: tank.y + Math.sin(angulo) * OFFSET_DA_BOCA,
+  };
+  const centro = { x: tank.x, y: tank.y };
+  const bloqueio = raycastSegment(centro, boca, paredesParaBala(maze));
+  const x = bloqueio ? bloqueio.point.x + bloqueio.normal.x * 1e-4 : boca.x;
+  const y = bloqueio ? bloqueio.point.y + bloqueio.normal.y * 1e-4 : boca.y;
+  tracarTiro(x, y, angulo, maze);
 }
 
 /**
@@ -185,7 +219,7 @@ function erroDoTiro(tank: Tank, angulo: number, alvo: Vec2, maze: Maze): number 
  * engolir o gatilho no corredor curto em vez de virar a piada da rodada.
  */
 function autogolProvavel(tank: Tank, angulo: number, maze: Maze): boolean {
-  tracarTiro(tank.x + Math.cos(angulo) * OFFSET_DA_BOCA, tank.y + Math.sin(angulo) * OFFSET_DA_BOCA, angulo, maze);
+  tracarTiroDoTanque(tank, angulo, maze);
   return distanciaAteATrajetoria(tank.x, tank.y, VOO_ATE_FICAR_LETAL) <= RAIO_ACERTO + 3;
 }
 
@@ -259,44 +293,74 @@ let ameacaBy = 0;
  * em `ameacaVx/Vy` (é dela que sai a direção de fuga) e devolve em quantos segundos o encontro
  * acontece.
  *
- * O teste é o mesmo mínimo de distância relativa que a colisão bala×bala usa: a posição relativa
- * anda em linha reta, então o instante de aproximação máxima sai da derivada. Balas sem linha de
- * visão até aqui são ignoradas — elas ainda vão ricochetear no caminho, e prever isso deixaria o
- * bot fugindo de sombra.
+ * O teste é o mesmo mínimo de distância relativa que a colisão bala×bala usa: em cada trecho a
+ * posição relativa anda em linha reta, então o instante de aproximação máxima sai da derivada.
+ * No difícil, a previsão acompanha também o único ricochete permitido; nos outros níveis conserva
+ * o horizonte curto e retilíneo anterior.
  */
-function ameacaMaisUrgente(tank: Tank, bullets: readonly Bullet[], maze: Maze): number | null {
+function ameacaMaisUrgente(tank: Tank, bullets: readonly Bullet[], maze: Maze, preveRicochete: boolean): number | null {
   const limite = RAIO_ACERTO + MARGEM_DE_AMEACA;
   let melhorT = Infinity;
   const posBala: Vec2 = { x: 0, y: 0 };
   const posTanque: Vec2 = { x: tank.x, y: tank.y };
+  const destino: Vec2 = { x: 0, y: 0 };
+  const paredes = paredesParaBala(maze);
 
   for (const bala of bullets) {
-    const px = bala.x - tank.x;
-    const py = bala.y - tank.y;
-    const vv = bala.vx * bala.vx + bala.vy * bala.vy;
-    if (vv < 1e-6) continue;
+    const horizonte = Math.min(BULLET_LIFE - bala.age, preveRicochete ? BULLET_LIFE : HORIZONTE_DE_AMEACA);
+    if (horizonte <= 0) continue;
 
-    let t = -(px * bala.vx + py * bala.vy) / vv;
-    if (t < 0) continue; // já passou
-    if (t > HORIZONTE_DE_AMEACA) continue;
+    let x = bala.x;
+    let y = bala.y;
+    let vx = bala.vx;
+    let vy = bala.vy;
+    let quicadas = bala.bounces;
+    let decorrido = 0;
 
-    // A própria bala não machuca enquanto a imunidade dura; se o encontro é dentro dela, passa.
-    if (bala.ownerId === tank.id && bala.age + t < SELF_IMMUNITY) continue;
+    while (decorrido < horizonte) {
+      const restante = horizonte - decorrido;
+      posBala.x = x;
+      posBala.y = y;
+      destino.x = x + vx * restante;
+      destino.y = y + vy * restante;
+      const hit = raycastSegment(posBala, destino, paredes);
+      const duracao = hit ? restante * hit.t : restante;
+      const px = x - tank.x;
+      const py = y - tank.y;
+      const vv = vx * vx + vy * vy;
 
-    const dx = px + bala.vx * t;
-    const dy = py + bala.vy * t;
-    if (Math.hypot(dx, dy) > limite) continue;
+      const inicioLetal = bala.ownerId === tank.id ? SELF_IMMUNITY - bala.age - decorrido : 0;
+      if (vv > 1e-6 && inicioLetal <= duracao) {
+        let noTrecho = -(px * vx + py * vy) / vv;
+        if (noTrecho < Math.max(0, inicioLetal)) noTrecho = Math.max(0, inicioLetal);
+        else if (noTrecho > duracao) noTrecho = duracao;
+        const encontro = decorrido + noTrecho;
+        const dx = px + vx * noTrecho;
+        const dy = py + vy * noTrecho;
 
-    posBala.x = bala.x;
-    posBala.y = bala.y;
-    if (!hasLineOfSight(posBala, posTanque, maze.walls)) continue;
+        posBala.x = x + vx * noTrecho;
+        posBala.y = y + vy * noTrecho;
+        if (
+          encontro < melhorT &&
+          Math.hypot(dx, dy) <= limite &&
+          hasLineOfSight(posBala, posTanque, maze.walls)
+        ) {
+          melhorT = encontro;
+          ameacaVx = vx;
+          ameacaVy = vy;
+          ameacaBx = x;
+          ameacaBy = y;
+        }
+      }
 
-    if (t < melhorT) {
-      melhorT = t;
-      ameacaVx = bala.vx;
-      ameacaVy = bala.vy;
-      ameacaBx = bala.x;
-      ameacaBy = bala.y;
+      if (!hit || !preveRicochete || quicadas >= MAX_BOUNCES || duracao < 1e-6) break;
+      const refletida = reflect({ x: vx, y: vy }, hit.normal);
+      vx = refletida.x;
+      vy = refletida.y;
+      x = hit.point.x + hit.normal.x * 0.05;
+      y = hit.point.y + hit.normal.y * 0.05;
+      quicadas++;
+      decorrido += duracao;
     }
   }
 
@@ -318,12 +382,12 @@ const PASSO_DE_FUGA = CELL * 0.85;
  * do tiro). Se a parede fecha esse lado, tenta o outro; se os dois estão fechados, não há desvio
  * a fazer e o bot segue com o plano que tinha.
  */
-function escolherFuga(tank: Tank, maze: Maze): number | null {
+function escolherFuga(tank: Tank, maze: Maze, desempate: 1 | -1): number | null {
   const anguloDaBala = Math.atan2(ameacaVy, ameacaVx);
   // Sinal do produto vetorial entre a velocidade da bala e o vetor bala→tanque: diz de que lado
   // da trajetória o tanque está.
   const cross = ameacaVx * (tank.y - ameacaBy) - ameacaVy * (tank.x - ameacaBx);
-  const preferido = cross >= 0 ? 1 : -1;
+  const preferido = cross === 0 ? desempate : cross > 0 ? 1 : -1;
 
   for (const lado of [preferido, -preferido]) {
     const angulo = normalizeAngle(anguloDaBala + (Math.PI / 2) * lado);
@@ -368,6 +432,42 @@ function procurarCobertura(tank: Tank, alvo: Vec2, maze: Maze): number | null {
 }
 
 // ------------------------------------------------------------------------------------------
+// Combate avançado
+// ------------------------------------------------------------------------------------------
+
+/**
+ * Resolve o encontro entre a bala e um alvo que mantém a velocidade observada no último tick.
+ * Se a projeção atravessaria parede ou sairia do alcance, conserva a mira atual: nesses casos o
+ * tanque vai frear ou virar, portanto extrapolar sua reta seria pior que não antecipar.
+ */
+function miraAntecipada(tank: Tank, alvo: Vec2, vx: number, vy: number, maze: Maze): number {
+  const rx = alvo.x - tank.x;
+  const ry = alvo.y - tank.y;
+  const a = vx * vx + vy * vy - BULLET_SPEED * BULLET_SPEED;
+  const b = 2 * (rx * vx + ry * vy);
+  const c = rx * rx + ry * ry;
+  const discriminante = b * b - 4 * a * c;
+  let tempo = -1;
+
+  if (discriminante >= 0 && Math.abs(a) > 1e-6) {
+    const raiz = Math.sqrt(discriminante);
+    const t1 = (-b - raiz) / (2 * a);
+    const t2 = (-b + raiz) / (2 * a);
+    if (t1 > 0 && t2 > 0) tempo = Math.min(t1, t2);
+    else if (t1 > 0) tempo = t1;
+    else if (t2 > 0) tempo = t2;
+  }
+
+  if (tempo <= 0 || tempo > BULLET_LIFE) return Math.atan2(ry, rx);
+
+  const previsto = { x: alvo.x + vx * tempo, y: alvo.y + vy * tempo };
+  if (!cabeTanque(previsto.x, previsto.y, maze) || !hasLineOfSight(tank, previsto, maze.walls)) {
+    return Math.atan2(ry, rx);
+  }
+  return Math.atan2(previsto.y - tank.y, previsto.x - tank.x);
+}
+
+// ------------------------------------------------------------------------------------------
 // Montagem do input
 // ------------------------------------------------------------------------------------------
 
@@ -387,6 +487,15 @@ function rumoPara(tank: Tank, desejado: number, podeDarRe: boolean): Rumo {
   }
   const deRe = normalizeAngle(diff > 0 ? diff - Math.PI : diff + Math.PI);
   return { turn: Math.abs(deRe) < 0.02 ? 0 : deRe > 0 ? 1 : -1, move: -1 };
+}
+
+/** Ângulo que a torre terá depois do giro deste tick, imediatamente antes de `stepTanks` atirar. */
+function anguloDoDisparoNesteTick(tank: Tank, aim: number | undefined): number {
+  if (aim === undefined) return tank.turret;
+  const diff = normalizeAngle(aim - tank.turret);
+  const passo = TURRET_RATE / TICK_HZ;
+  if (Math.abs(diff) <= passo) return normalizeAngle(aim);
+  return normalizeAngle(tank.turret + Math.sign(diff) * passo);
 }
 
 // IA determinística. Depois da Fase 4 o bot tem DUAS direções para cuidar, igual ao jogador: o
@@ -428,7 +537,7 @@ export function botInput(
 // para precisar de mais que isso. O throttle é contado em ticks de simulação (não em tempo de
 // relógio), então é idêntico no servidor e no cliente.
 const TICKS_ENTRE_RECALCULO_DE_ROTA = 10;
-/** Replanejar ricochete é o que custa mais caro na IA — 3×/s é suficiente para o alvo não fugir. */
+/** Base de 3 planos/s; contra quem ricocheteia, o difícil reage a cada 8 ticks (7,5 planos/s). */
 const TICKS_ENTRE_PLANOS_DE_TIRO = 20;
 const TICKS_ENTRE_BUSCAS_DE_COBERTURA = 12;
 /** Por quanto tempo depois de uma bala passar raspando o bot continua se comportando como acuado. */
@@ -447,9 +556,9 @@ export interface Bot {
  * Bot com navegação, desvio de bala, mira por ricochete, freio de autogol e uso de parede — o que
  * cada um desses está ligado sai de `config` (ver `BOT_DIFFICULTY`).
  *
- * Estado interno = só caches de replanejamento (waypoint, ângulo de ricochete, cobertura) e o
- * tick de cada um, todos derivados de entradas determinísticas: dois processos com o mesmo `rng`,
- * mesmo labirinto e mesma sequência de chamadas produzem exatamente os mesmos inputs.
+ * O estado interno guarda caches de replanejamento, o movimento observado do alvo e sinais do
+ * estilo do adversário. Tudo deriva de entradas determinísticas: dois processos com o mesmo
+ * `rng`, labirinto e sequência de chamadas produzem exatamente os mesmos inputs.
  */
 export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot {
   let waypoint: Vec2 | null = null;
@@ -462,6 +571,15 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
   let coberturaTick: number | null = null;
 
   let tickDaUltimaAmeaca = -9999;
+  let adversarioUsaRicochete = false;
+  let tinhaLosNoTickAnterior: boolean | null = null;
+
+  let alvoAnteriorX: number | null = null;
+  let alvoAnteriorY: number | null = null;
+  let tickDoAlvoAnterior: number | null = null;
+  // Num tiro perfeitamente centralizado não existe um lado geometricamente melhor para fugir.
+  // Este desempate nasce do RNG semeado e evita que todos os bots escolham sempre o mesmo lado.
+  const ladoDeFuga: 1 | -1 = rng.int(2) === 0 ? -1 : 1;
 
   // Defasagem fixa deste bot dentro do ciclo de replanejamento (ver o uso, logo abaixo). Vem do
   // RNG semeado, então é idêntica no cliente e no servidor.
@@ -472,21 +590,59 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
       const ruido = rng.next();
       const temLos = hasLineOfSight(tank, target, maze.walls);
 
+      let alvoVx = 0;
+      let alvoVy = 0;
+      if (alvoAnteriorX !== null && alvoAnteriorY !== null && tickDoAlvoAnterior !== null && tick > tickDoAlvoAnterior) {
+        const segundos = (tick - tickDoAlvoAnterior) / TICK_HZ;
+        alvoVx = (target.x - alvoAnteriorX) / segundos;
+        alvoVy = (target.y - alvoAnteriorY) / segundos;
+        const velocidade = Math.hypot(alvoVx, alvoVy);
+        if (velocidade > TANK_SPEED * 1.1) {
+          const escala = (TANK_SPEED * 1.1) / velocidade;
+          alvoVx *= escala;
+          alvoVy *= escala;
+        }
+      }
+      alvoAnteriorX = target.x;
+      alvoAnteriorY = target.y;
+      tickDoAlvoAnterior = tick;
+
+      let balasProprias = 0;
+      if (mundo) {
+        for (const bala of mundo.bullets) {
+          if (bala.ownerId === tank.id) balasProprias++;
+          else if (tinhaLosNoTickAnterior === false && !temLos && bala.age <= 1.5 / TICK_HZ) {
+            adversarioUsaRicochete = true;
+          }
+        }
+      }
+      tinhaLosNoTickAnterior = temLos;
+
       // ---- 1. estou na mira de alguma bala? ----
       let fuga: number | null = null;
       if (config.desvia && mundo && mundo.bullets.length > 0) {
-        const quando = ameacaMaisUrgente(tank, mundo.bullets, maze);
+        const quando = ameacaMaisUrgente(tank, mundo.bullets, maze, config.usaParede);
         if (quando !== null) {
           tickDaUltimaAmeaca = tick;
-          fuga = escolherFuga(tank, maze);
+          fuga = escolherFuga(tank, maze, ladoDeFuga);
         }
       }
 
       // ---- 2. para onde mirar ----
-      let anguloDeMira = Math.atan2(target.y - tank.y, target.x - tank.x);
+      let anguloDeMira =
+        config.usaParede && temLos && balasProprias > 0
+          ? miraAntecipada(
+              tank,
+              target,
+              alvoVx * 0.8,
+              alvoVy * 0.8,
+              maze,
+            )
+          : Math.atan2(target.y - tank.y, target.x - tank.x);
       let temTiro = temLos;
       if (!temLos && config.ricocheteia) {
-        if (planoTick === null || tick - planoTick >= TICKS_ENTRE_PLANOS_DE_TIRO) {
+        const intervaloDoPlano = config.usaParede && adversarioUsaRicochete ? 8 : TICKS_ENTRE_PLANOS_DE_TIRO;
+        if (planoTick === null || tick - planoTick >= intervaloDoPlano) {
           // A primeira avaliação sai na hora (perder o inimigo de vista e ficar meio segundo sem
           // resposta seria pior que o custo), mas o relógio dela nasce RECUADO pela defasagem
           // deste bot: é isso que espalha os replanejamentos seguintes entre os bots da sala, em
@@ -527,6 +683,10 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
         moveTarget = waypoint ?? target;
       }
 
+      if (config.usaParede && adversarioUsaRicochete) {
+        anguloDeMira = normalizeAngle(anguloDeMira + (ruido * 2 - 1) * 0.001);
+      }
+
       const input = botInput(tank, moveTarget, anguloDeMira, temLos, temTiro, ruido, config);
 
       // Fugir e se cobrir MANDAM no chassi; a torre continua com a mira montada acima, então o
@@ -537,8 +697,9 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
       }
 
       // ---- 4. freio de autogol ----
-      // Checa o ângulo REAL da torre, não o desejado: é dele que a bala sai neste tick.
-      if (input.fire && config.evitaAutogol && autogolProvavel(tank, tank.turret, maze)) {
+      // `stepTanks` gira a torre antes de criar a bala; a segurança precisa validar esse ângulo
+      // pós-giro, não `tank.turret`, que ainda guarda a direção do tick anterior.
+      if (input.fire && config.evitaAutogol && autogolProvavel(tank, anguloDoDisparoNesteTick(tank, input.aim), maze)) {
         input.fire = false;
       }
 
