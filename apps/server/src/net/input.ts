@@ -1,4 +1,4 @@
-import { decodeAim } from '@tank/protocol';
+import { decodeAim, direcaoDeMovimento } from '@tank/protocol';
 import type { Input } from '@tank/shared-sim';
 
 /**
@@ -6,11 +6,17 @@ import type { Input } from '@tank/shared-sim';
  *
  * `bits` é 1 byte com 5 flags (bitfield, mesma semântica de `InputMsg.up/down/left/right/fire`
  * do `@tank/protocol`, só que compactado para economizar banda a 30 Hz):
- *   bit 0 (0x01) — avançar
- *   bit 1 (0x02) — dar ré
- *   bit 2 (0x04) — girar à esquerda
- *   bit 3 (0x08) — girar à direita
+ *   bit 0 (0x01) — andar para cima na tela
+ *   bit 1 (0x02) — andar para baixo na tela
+ *   bit 2 (0x04) — andar para a esquerda na tela
+ *   bit 3 (0x08) — andar para a direita na tela
  *   bit 4 (0x10) — atirar (borda de subida detectada no cliente)
+ *
+ * A direção do movimento é BOOLEANA na rede de propósito: 4 bits são baratos e não têm valor
+ * inválido possível, enquanto um float de ângulo vindo do cliente seria entrada não confiável
+ * (mandar 0,001 rad de cada vez daria uma precisão de movimento que o teclado não dá a ninguém).
+ * Quem transforma os bits em ângulo é `direcaoDeMovimento`, do `@tank/protocol` — a MESMA função
+ * que o cliente usa nas próprias teclas, para as duas pontas derivarem a mesma direção.
  *
  * `aim` é 1 byte com a direção do cursor do mouse quantizada em 256 passos (0..255 → 0..2π,
  * ≈1,4° cada). A torre gira devagar (`TURRET_RATE`), então essa resolução é invisível na tela.
@@ -39,8 +45,7 @@ export function decodeInputBits(bits: number, aim?: number): Input {
   const fire = (bits & BIT_FIRE) !== 0;
 
   return {
-    turn: (right ? 1 : 0) - (left ? 1 : 0) as -1 | 0 | 1,
-    move: (up ? 1 : 0) - (down ? 1 : 0) as -1 | 0 | 1,
+    mover: direcaoDeMovimento(up, down, left, right),
     fire,
     // Cliente antigo (ou pacote sem o campo): sem mira o `step()` deixa a torre parada, em vez
     // de fabricar um ângulo que a outra ponta não conhece.

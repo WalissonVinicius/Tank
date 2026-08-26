@@ -28,10 +28,10 @@ export type MessageType = (typeof MessageType)[keyof typeof MessageType];
 // depurar; o empacotamento em bits (se necessário para banda) fica a cargo da camada de rede.
 export interface InputMsg {
   seq: number; // uint16, incrementa a cada input enviado
-  up: boolean; // avança
-  down: boolean; // dá ré
-  left: boolean; // gira à esquerda
-  right: boolean; // gira à direita
+  up: boolean; // anda para CIMA na tela
+  down: boolean; // anda para BAIXO na tela
+  left: boolean; // anda para a ESQUERDA na tela
+  right: boolean; // anda para a DIREITA na tela
   fire: boolean; // borda de subida detectada no cliente; servidor debita munição
   /**
    * Ângulo absoluto (rad) para onde a TORRE deve apontar — direção do cursor do mouse vista do
@@ -44,7 +44,7 @@ export interface InputMsg {
 /** Formato realmente trafegado no canal `input` — bitfield de 5 flags, ver `server/net/input.ts`. */
 export interface InputBitsMsg {
   seq: number; // uint16
-  bits: number; // bit0 frente, bit1 ré, bit2 esquerda, bit3 direita, bit4 atirar
+  bits: number; // bit0 cima, bit1 baixo, bit2 esquerda, bit3 direita, bit4 atirar
   /**
    * Mira quantizada em 1 byte: 0..255 cobre 0..2π (≈1,4° por passo). A torre gira devagar
    * (`TURRET_RATE`), então essa resolução é invisível na tela e economiza banda a 30 Hz.
@@ -72,6 +72,55 @@ export const INPUT_BIT = {
   right: 0x08,
   fire: 0x10,
 } as const;
+
+/**
+ * ÚNICO lugar onde as quatro teclas de direção viram uma direção de MUNDO (rad), e a razão de ela
+ * morar no `protocol` e não em cada ponta: o servidor monta o `Input` a partir dos bits que
+ * chegaram pela rede e o cliente monta o dele a partir das MESMAS quatro teclas. Duas cópias
+ * dessa conta, ainda que idênticas hoje, divergiriam no primeiro ajuste — e divergir aqui é o
+ * tanque andando para um lado no servidor e para outro na tela.
+ *
+ * O eixo Y cresce para BAIXO (é o do labirinto e o da tela), então `W` sozinho é `-π/2`.
+ *
+ * Devolve ÂNGULO, não vetor, de propósito: ângulo já é unitário por construção, e com ele é
+ * impossível representar a diagonal de módulo √2 que faria o tanque andar 41% mais rápido na
+ * diagonal — o bug clássico do movimento em 8 direções. De quebra, é a mesma unidade de
+ * `heading`, `turret` e `aim`, que o resto da simulação já fala.
+ */
+export function direcaoDeMovimento(
+  up: boolean,
+  down: boolean,
+  left: boolean,
+  right: boolean,
+): number | null {
+  const dx = (right ? 1 : 0) - (left ? 1 : 0);
+  const dy = (down ? 1 : 0) - (up ? 1 : 0);
+  if (dx === 0 && dy === 0) return null;
+  return Math.atan2(dy, dx);
+}
+
+/**
+ * Inverso de `direcaoDeMovimento`: a direção volta a ser as quatro flags de `INPUT_BIT` para
+ * viajar na rede. Quem manda input é o cliente, que já tem a direção pronta em `Input.mover`;
+ * a rede continua carregando BOOLEANOS (baratos e à prova de valor inválido) e o float de ângulo
+ * nunca sai da máquina que o produziu — ângulo vindo do cliente é entrada não confiável.
+ *
+ * Ângulo fora das 8 direções canônicas é ENCAIXADO na oitava mais próxima; arredondar para
+ * múltiplo de π/4 antes de extrair os sinais é o que torna exato o ida-e-volta
+ * `direcaoDeMovimento → bitsDeMovimento → direcaoDeMovimento`.
+ */
+export function bitsDeMovimento(mover: number | null): number {
+  if (mover === null) return 0;
+  const oitava = Math.round(mover / (Math.PI / 4)) * (Math.PI / 4);
+  const dx = Math.round(Math.cos(oitava));
+  const dy = Math.round(Math.sin(oitava));
+  let bits = 0;
+  if (dx > 0) bits |= INPUT_BIT.right;
+  else if (dx < 0) bits |= INPUT_BIT.left;
+  if (dy > 0) bits |= INPUT_BIT.down;
+  else if (dy < 0) bits |= INPUT_BIT.up;
+  return bits;
+}
 
 /** Canal `ready`: alterna o estado de pronto do jogador no lobby. */
 export interface ReadyMsg {

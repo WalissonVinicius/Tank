@@ -5,7 +5,7 @@
 // Foi exatamente a divergência entre o canal escolhido no cliente e o escolhido no servidor
 // que quase quebrou o modo online na Fase 2.
 import { Client, type Room } from '@colyseus/sdk';
-import { encodeAim, MessageType } from '@tank/protocol';
+import { bitsDeMovimento, encodeAim, MessageType } from '@tank/protocol';
 import type {
   BulletDeadMsg,
   BulletSpawnMsg,
@@ -24,21 +24,18 @@ const RECONNECT_KEY = 'tank_reconnect';
 // morreu e insistir só rende um erro de matchmaking.
 const RECONNECT_WINDOW_MS = 30_000;
 
-// Espelha `apps/server/src/net/input.ts` (`decodeInputBits`): bit0 avançar, bit1 ré,
-// bit2 esquerda, bit3 direita, bit4 atirar. O servidor recebe `{ seq, bits, aim }`, não o
-// `InputMsg` completo do protocol — `aim` vai à parte porque é 1 byte de ângulo, não uma flag.
-const BIT_UP = 0x01;
-const BIT_DOWN = 0x02;
-const BIT_LEFT = 0x04;
-const BIT_RIGHT = 0x08;
+// Espelha `apps/server/src/net/input.ts` (`decodeInputBits`): bit0 cima, bit1 baixo, bit2
+// esquerda, bit3 direita, bit4 atirar. O servidor recebe `{ seq, bits, aim }`, não o `InputMsg`
+// completo do protocol — `aim` vai à parte porque é 1 byte de ângulo, não uma flag.
+//
+// A direção de movimento volta a virar BITS aqui: `bitsDeMovimento` é o inverso exato de
+// `direcaoDeMovimento`, então o ângulo que o cliente montou das teclas é o mesmo que o servidor
+// remonta do outro lado. O float de ângulo do movimento não trafega — só a mira, que é do mouse
+// e não teria como ser representada em 4 flags.
 const BIT_FIRE = 0x10;
 
 function encodeInputBits(input: Input): number {
-  let bits = 0;
-  if (input.move > 0) bits |= BIT_UP;
-  if (input.move < 0) bits |= BIT_DOWN;
-  if (input.turn < 0) bits |= BIT_LEFT;
-  if (input.turn > 0) bits |= BIT_RIGHT;
+  let bits = bitsDeMovimento(input.mover);
   if (input.fire) bits |= BIT_FIRE;
   return bits;
 }

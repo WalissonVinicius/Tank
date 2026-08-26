@@ -30,7 +30,7 @@ describe('sim.step', () => {
     const tank: Tank = { id: 'p1', x: 200, y: 200, heading: 0, turret: 0, alive: true, fireCooldownLeft: 0 };
     const bullet: Bullet = { id: 'b1', ownerId: 'p1', x: 200, y: 200, vx: 0, vy: 0, bounces: 0, age: 0 };
     const state: SimState = { tick: 0, maze, tanks: new Map([['p1', tank]]), bullets: [bullet], nextBulletId: 1 };
-    const inputs = new Map<string, Input>([['p1', { turn: 0, move: 0, fire: false }]]);
+    const inputs = new Map<string, Input>([['p1', { mover: null, fire: false }]]);
     const dt = 1 / 60;
 
     const ticksBeforeImmunity = Math.floor(SELF_IMMUNITY / dt) - 2;
@@ -156,8 +156,8 @@ describe('sim.step', () => {
       nextBulletId: 3,
     };
     const inputs = new Map<string, Input>([
-      ['p1', { turn: 0, move: 0, fire: true }],
-      ['p2', { turn: 0, move: 0, fire: false }],
+      ['p1', { mover: null, fire: true }],
+      ['p2', { mover: null, fire: false }],
     ]);
 
     const before = state.bullets.filter((b) => b.ownerId === 'p1').length;
@@ -179,7 +179,7 @@ describe('sim.step — torre independente com giro limitado', () => {
   it('a torre não teleporta: gasta o tempo previsto por TURRET_RATE para virar meia-volta', () => {
     const state = tanqueSozinho(0, 0);
     const dt = 1 / 60;
-    const inputs = new Map<string, Input>([['p1', { turn: 0, move: 0, fire: false, aim: Math.PI }]]);
+    const inputs = new Map<string, Input>([['p1', { mover: null, fire: false, aim: Math.PI }]]);
 
     step(state, inputs, dt);
     // Depois de UM tick a torre andou no máximo TURRET_RATE·dt — não pulou para o alvo.
@@ -192,14 +192,14 @@ describe('sim.step — torre independente com giro limitado', () => {
 
   it('sem `aim` no input a torre fica parada onde está (não volta para o chassi)', () => {
     const state = tanqueSozinho(0, 1.2);
-    for (let i = 0; i < 120; i++) step(state, new Map([['p1', { turn: 1, move: 1, fire: false }]]), 1 / 60);
+    for (let i = 0; i < 120; i++) step(state, new Map([['p1', { mover: 0.6, fire: false }]]), 1 / 60);
     expect(state.tanks.get('p1')!.turret).toBeCloseTo(1.2, 10);
   });
 
   it('a bala sai na direção da TORRE, não do chassi', () => {
     // Chassi virado para o leste, torre já apontada para o norte.
     const state = tanqueSozinho(0, -Math.PI / 2);
-    const events = step(state, new Map([['p1', { turn: 0, move: 0, fire: true, aim: -Math.PI / 2 }]]), 1 / 60);
+    const events = step(state, new Map([['p1', { mover: null, fire: true, aim: -Math.PI / 2 }]]), 1 / 60);
 
     const tiro = events.find((e) => e.type === 'shot');
     expect(tiro).toBeDefined();
@@ -221,7 +221,7 @@ describe('sim.step — torre independente com giro limitado', () => {
     const state: SimState = { tick: 0, maze, tanks: new Map([['p1', tank]]), bullets: [], nextBulletId: 0 };
     const dt = 1 / 60;
 
-    step(state, new Map([['p1', { turn: 0, move: 0, fire: true, aim: -Math.PI / 2 }]]), dt);
+    step(state, new Map([['p1', { mover: null, fire: true, aim: -Math.PI / 2 }]]), dt);
     state.tick++;
     expect(state.bullets).toHaveLength(1);
 

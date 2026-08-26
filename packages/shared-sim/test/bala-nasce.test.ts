@@ -34,8 +34,8 @@ function arenaVazia(): Maze {
   };
 }
 
-const DISPARA: Input = { turn: 0, move: 0, fire: true };
-const PARADO: Input = { turn: 0, move: 0, fire: false };
+const DISPARA: Input = { mover: null, fire: true };
+const PARADO: Input = { mover: null, fire: false };
 
 describe('nascimento da bala junto à parede', () => {
   it('colado na parede da direita, com a torre nela, a bala nasce do lado de dentro', () => {

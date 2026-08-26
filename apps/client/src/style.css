@@ -716,21 +716,25 @@ body.em-jogo #btn-tela-cheia {
    aparecer os botão, só no lobby"). O esquema de teclas continua no lobby, em `#lobby-sala
    .bloco-teclas`, que é onde quem chega agora realmente lê. */
 
-/* ----- faixa de eliminado ----- */
+/* ----- canto inferior direito: ELIMINADO -----
+   Morava numa faixa vermelha atravessando o meio da arena — cobria ~12% da altura jogável bem na
+   hora em que a pessoa virava espectadora e mais queria ver o resto da partida. Vira cartão de
+   canto, no único canto que o HUD mínimo deixa livre durante a ação (ver comentário de
+   `#hud-treino` abaixo): a arena fica inteira à vista, e o pulso de entrada dá o peso da morte sem
+   precisar ficar plantado sobre o jogo pelos segundos seguintes. */
 #hud-eliminado {
   position: absolute;
-  left: 0;
-  right: 0;
-  top: 36%;
+  right: calc(var(--k) * 16px);
+  bottom: calc(var(--k) * 16px);
   display: none;
   align-items: center;
-  justify-content: center;
-  gap: 20px;
-  padding: 16px 0;
+  gap: calc(var(--k) * 10px);
+  padding: calc(var(--k) * 9px) calc(var(--k) * 16px);
   background: var(--vermelho);
-  border-top: 4px solid var(--traco);
-  border-bottom: 4px solid var(--traco);
-  animation: faixa-entra 320ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
+  border: var(--b) solid var(--traco);
+  border-radius: calc(var(--k) * 14px);
+  box-shadow: 0 calc(var(--k) * 5px) 0 var(--traco);
+  animation: eliminado-entra 400ms cubic-bezier(0.16, 0.86, 0.3, 1) both;
 }
 
 #hud-eliminado.ativa {
@@ -738,34 +742,35 @@ body.em-jogo #btn-tela-cheia {
 }
 
 #hud-eliminado .icone-3d {
-  width: 56px;
-  height: 56px;
+  width: calc(var(--k) * 30px);
+  height: calc(var(--k) * 30px);
   flex: none;
 }
 
 #hud-eliminado .titulo {
   font-family: var(--fd);
-  font-size: 44px;
+  font-size: calc(var(--k) * 18px);
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.1em;
   line-height: 1;
   color: var(--creme);
-  text-shadow: var(--contorno);
+  text-shadow: var(--contorno-fino);
 }
 
 #hud-eliminado .sub {
   font-family: var(--fd);
-  font-size: 13px;
+  font-size: calc(var(--k) * 11px);
   font-weight: 600;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
   color: rgba(255, 246, 224, 0.92);
-  margin-top: 6px;
+  margin-top: calc(var(--k) * 4px);
+  white-space: nowrap;
 }
 
-@keyframes faixa-entra {
+@keyframes eliminado-entra {
   from {
     opacity: 0;
-    transform: scaleY(0.3);
+    transform: scale(0.7) translateY(calc(var(--k) * 10px));
   }
   to {
     opacity: 1;
@@ -828,6 +833,13 @@ body.em-jogo #btn-tela-cheia {
   border-radius: 8px;
   box-shadow: 0 3px 0 var(--traco);
   opacity: 0.82;
+}
+
+/* O cartão de ELIMINADO mora no mesmo canto — quando ele aparece, "isto está valendo?" deixa de
+   ser a pergunta mais urgente da tela, então o selo cede o lugar em vez de empilhar por cima. */
+#hud-eliminado.ativa ~ #hud-treino {
+  opacity: 0;
+  visibility: hidden;
 }
 
 /* ---------------------------------------------------------------------------------------------

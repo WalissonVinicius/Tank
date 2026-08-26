@@ -407,8 +407,9 @@ const DIRECOES_DE_COBERTURA = 8;
 const PASSO_DE_COBERTURA = CELL * 1.15;
 
 /**
- * Um ponto a uma célula daqui que quebre a linha de visão do inimigo. Entre os que servem, o que
- * exige menos giro — cobertura que custa meia-volta chega depois do tiro.
+ * Um ponto a uma célula daqui que quebre a linha de visão do inimigo. Entre os que servem, o mais
+ * próximo da direção em que o tanque já vai — girar deixou de custar tempo com o movimento
+ * absoluto, mas manter o rumo evita ziguezague entre duas coberturas igualmente boas.
  */
 function procurarCobertura(tank: Tank, alvo: Vec2, maze: Maze): number | null {
   let melhorAngulo: number | null = null;
@@ -471,23 +472,11 @@ function miraAntecipada(tank: Tank, alvo: Vec2, vx: number, vy: number, maze: Ma
 // Montagem do input
 // ------------------------------------------------------------------------------------------
 
-interface Rumo {
-  turn: -1 | 0 | 1;
-  move: -1 | 0 | 1;
-}
-
 /**
- * Giro e marcha para apontar o CHASSI em `desejado`. Com o destino atrás, dá RÉ em vez de girar
- * meia-volta: o giro custa ~1 s e uma bala atravessa a arena nesse tempo.
+ * `rumoPara` e o par `turn`/`move` sumiram com o movimento absoluto: fugir, se cobrir e navegar
+ * viraram um ÂNGULO só, que é o que `Input.mover` pede. O caso "destino atrás, dá ré em vez de
+ * girar meia-volta" também deixou de existir — não há mais giro a pagar antes de andar.
  */
-function rumoPara(tank: Tank, desejado: number, podeDarRe: boolean): Rumo {
-  const diff = normalizeAngle(desejado - tank.heading);
-  if (!podeDarRe || Math.abs(diff) <= Math.PI / 2) {
-    return { turn: Math.abs(diff) < 0.02 ? 0 : diff > 0 ? 1 : -1, move: 1 };
-  }
-  const deRe = normalizeAngle(diff > 0 ? diff - Math.PI : diff + Math.PI);
-  return { turn: Math.abs(deRe) < 0.02 ? 0 : deRe > 0 ? 1 : -1, move: -1 };
-}
 
 /** Ângulo que a torre terá depois do giro deste tick, imediatamente antes de `stepTanks` atirar. */
 function anguloDoDisparoNesteTick(tank: Tank, aim: number | undefined): number {
@@ -498,9 +487,9 @@ function anguloDoDisparoNesteTick(tank: Tank, aim: number | undefined): number {
   return normalizeAngle(tank.turret + Math.sign(diff) * passo);
 }
 
-// IA determinística. Depois da Fase 4 o bot tem DUAS direções para cuidar, igual ao jogador: o
-// chassi aponta para onde ele quer ir e a torre para onde quer atirar; como o servidor limita o
-// giro dela a `TURRET_RATE`, ele sofre a mesma espera de virar o cano que o jogador sofre.
+// IA determinística. O bot tem DUAS direções para cuidar, igual ao jogador: para onde anda e para
+// onde a torre aponta. A primeira é imediata (movimento absoluto); a segunda o servidor limita a
+// `TURRET_RATE`, então ele sofre a mesma espera de virar o cano que o jogador sofre.
 //
 // Todo o "acaso" (erro de mira) vem do RNG semeado recebido por parâmetro — nunca Math.random().
 // O RNG é consumido UMA vez por decisão, sempre no mesmo ponto, para que a sequência não dependa
@@ -509,27 +498,24 @@ export function botInput(
   tank: Tank,
   moveTarget: Vec2,
   anguloDeMira: number,
-  temLos: boolean,
   temTiro: boolean,
   ruido: number,
   config: BotConfig,
 ): Input {
-  const desejado = Math.atan2(moveTarget.y - tank.y, moveTarget.x - tank.x);
-  const headingDiff = normalizeAngle(desejado - tank.heading);
-  const turn: -1 | 0 | 1 = Math.abs(headingDiff) < 0.02 ? 0 : headingDiff > 0 ? 1 : -1;
+  // A estratégia não mudou: o bot continua querendo ir até `moveTarget` (o inimigo, o waypoint da
+  // rota, o lado de fuga ou a cobertura, decididos lá em cima). O que mudou é só a TRADUÇÃO —
+  // antes ela virava `turn`/`move`, agora entrega a direção pronta.
+  const mover = Math.atan2(moveTarget.y - tank.y, moveTarget.x - tank.x);
 
   const aim = normalizeAngle(anguloDeMira + (ruido * 2 - 1) * config.aimErrorRad);
-  const chassiAlinhado = Math.abs(headingDiff) < config.turnThreshold;
   // Tolerância de disparo proporcional à distância que a torre ainda consegue cobrir num tick:
   // sem isso um bot com `aimErrorRad` menor que a resolução de giro nunca considera "mirado".
   const torreAlinhada = Math.abs(normalizeAngle(aim - tank.turret)) < Math.max(config.turnThreshold, TURRET_RATE / 60);
 
-  // Quem MANDA no `move` é a linha de visão, não o gatilho: com o inimigo à vista o bot só avança
-  // depois de encarar o alvo, mas navegando às cegas pelo labirinto ele não pode parar a cada
-  // curva — e desde o ricochete ele atira sem ter o inimigo à vista, que é justamente o caso em
-  // que ele está andando por waypoint.
-  const move: -1 | 0 | 1 = temLos ? (chassiAlinhado ? 1 : 0) : 1;
-  return { turn, move, fire: temTiro && torreAlinhada, aim };
+  // Sumiu daqui o "com o inimigo à vista, só avança depois de encarar o alvo": aquilo era uma
+  // espera pelo GIRO DO CHASSI, que não existe mais. O bot larga na direção escolhida no mesmo
+  // tick, exatamente como o jogador — `config.turnThreshold` segue mandando só no gatilho.
+  return { mover, fire: temTiro && torreAlinhada, aim };
 }
 
 // BFS custa caro para rodar todo tick × todo bot. Recalcula a rota só a cada ~10 ticks (6×/s)
@@ -661,10 +647,12 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
 
       // ---- 3. para onde ir ----
       let moveTarget: Vec2 = target;
-      let rumo: Rumo | null = null;
+      // Direção pronta que ATROPELA `moveTarget`: fugir e se cobrir já são um ângulo, não um
+      // ponto a perseguir.
+      let rumo: number | null = null;
 
       if (fuga !== null) {
-        rumo = rumoPara(tank, fuga, true);
+        rumo = fuga;
       } else if (
         config.usaParede &&
         temLos &&
@@ -674,7 +662,7 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
           coberturaTick = tick;
           cobertura = procurarCobertura(tank, target, maze);
         }
-        if (cobertura !== null) rumo = rumoPara(tank, cobertura, true);
+        if (cobertura !== null) rumo = cobertura;
       } else if (!temLos) {
         if (waypointTick === null || tick - waypointTick >= TICKS_ENTRE_RECALCULO_DE_ROTA) {
           waypoint = nextStepTowards(maze, tank, target);
@@ -687,14 +675,13 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
         anguloDeMira = normalizeAngle(anguloDeMira + (ruido * 2 - 1) * 0.001);
       }
 
-      const input = botInput(tank, moveTarget, anguloDeMira, temLos, temTiro, ruido, config);
+      const input = botInput(tank, moveTarget, anguloDeMira, temTiro, ruido, config);
 
-      // Fugir e se cobrir MANDAM no chassi; a torre continua com a mira montada acima, então o
-      // bot atira de lado enquanto corre — que é exatamente o que um jogador humano faz.
-      if (rumo) {
-        input.turn = rumo.turn;
-        input.move = rumo.move;
-      }
+      // Fugir e se cobrir MANDAM no deslocamento; a torre continua com a mira montada acima, então
+      // o bot atira de lado enquanto corre — que é exatamente o que um jogador humano faz. Com o
+      // movimento absoluto isso deixou de ser uma intenção e virou um fato: antes ele ainda tinha
+      // que girar o chassi para começar a sair da linha.
+      if (rumo !== null) input.mover = rumo;
 
       // ---- 4. freio de autogol ----
       // `stepTanks` gira a torre antes de criar a bala; a segurança precisa validar esse ângulo

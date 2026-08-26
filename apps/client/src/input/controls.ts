@@ -1,13 +1,19 @@
-// Controles do jogador (Fase 4). Duas mãos, duas direções independentes:
+// Controles do jogador. Duas mãos, duas direções independentes — as duas ABSOLUTAS:
 //
-//   CHASSI — `W`/`S` (ou ↑/↓) andam para frente/ré, `A`/`D` (ou ←/→) giram o tanque.
-//   TORRE  — segue o cursor do mouse. O ângulo vai como ENTRADA (`Input.aim`) e quem limita o
-//            giro é o `step()` do shared-sim, a `TURRET_RATE` — o cliente nunca escreve `turret`.
-//   TIRO   — botão ESQUERDO do mouse, com `espaço` mantido como alternativa.
+//   ANDAR — `W`/`A`/`S`/`D` (ou as setas) movem para CIMA/ESQUERDA/BAIXO/DIREITA na tela, e as
+//           combinações dão as diagonais. O tanque sai andando no mesmo tick; o chassi vira para
+//           lá depois, de enfeite. Não existe mais "girar o tanque": a mão esquerda parou de
+//           jogar um jogo de 1982 enquanto a direita jogava um moderno.
+//   TORRE — segue o cursor do mouse. O ângulo vai como ENTRADA (`Input.aim`) e quem limita o
+//           giro é o `step()` do shared-sim, a `TURRET_RATE` — o cliente nunca escreve `turret`.
+//   TIRO  — botão ESQUERDO do mouse, com `espaço` mantido como alternativa.
 //
 // `fire` é entregue como borda de subida (consumida no primeiro `read()` depois do clique/tecla),
-// que é exatamente o que o servidor espera em `InputMsg.fire`. `turn`/`move` são estado de nível.
+// que é exatamente o que o servidor espera em `InputMsg.fire`. As teclas de direção são estado de
+// nível, e viram ângulo por `direcaoDeMovimento` — a MESMA função que o servidor usa nos bits que
+// chegam pela rede, para as duas pontas nunca derivarem direções diferentes das mesmas teclas.
 
+import { direcaoDeMovimento } from '@tank/protocol';
 import type { Input, Vec2 } from '@tank/shared-sim';
 
 const LEFT = new Set(['ArrowLeft', 'KeyA']);
@@ -106,8 +112,7 @@ export function createControls(options: ControlsOptions): Controls {
         else if (DOWN.has(code)) down = true;
       }
 
-      const turn: -1 | 0 | 1 = left === right ? 0 : left ? -1 : 1;
-      const move: -1 | 0 | 1 = up === down ? 0 : up ? 1 : -1;
+      const mover = direcaoDeMovimento(up, down, left, right);
 
       if (pointer && myPos) {
         const alvo = options.screenToWorld(pointer.x, pointer.y);
@@ -120,7 +125,7 @@ export function createControls(options: ControlsOptions): Controls {
       const fire = fireEdge;
       fireEdge = false;
 
-      return { turn, move, fire, aim: ultimoAim };
+      return { mover, fire, aim: ultimoAim };
     },
     get pointer(): Readonly<Vec2> | null {
       return pointer;

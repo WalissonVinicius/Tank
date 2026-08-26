@@ -1276,7 +1276,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       // movimento. `read(null)` continua sendo chamado para CONSUMIR a borda de tiro: sem isso,
       // um clique dado no menu sairia como disparo no instante em que ele fechasse.
       const bruto = controls.read(menuAberto ? null : minhaAmostra);
-      const meu: Input = menuAberto ? { turn: 0, move: 0, fire: false } : bruto;
+      const meu: Input = menuAberto ? { mover: null, fire: false } : bruto;
       ultimoAim = meu.aim;
       net.sendInput(meu, seq++);
     }

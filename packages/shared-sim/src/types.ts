@@ -21,7 +21,9 @@ export interface Tank {
   id: string;
   x: number;
   y: number;
-  heading: number; // rad — direção do chassi (só movimento sai daqui)
+  // rad — para onde o chassi APONTA. Desde o movimento absoluto é puramente cosmético: ele
+  // persegue `Input.mover` a TURN_RATE, mas quem decide o deslocamento é `Input.mover`, não ele.
+  heading: number;
   turret: number; // rad — direção da torre, gira até `Input.aim` a TURRET_RATE; a BALA sai daqui
   alive: boolean;
   fireCooldownLeft: number; // segundos até poder atirar de novo
@@ -47,8 +49,20 @@ export interface SimState {
 }
 
 export interface Input {
-  turn: -1 | 0 | 1; // -1 esquerda, 1 direita
-  move: -1 | 0 | 1; // -1 ré, 1 frente
+  /**
+   * Direção do movimento em radianos, em coordenadas de MUNDO (Y cresce para baixo). `null` =
+   * parado. O tanque anda para lá NESTE tick, na velocidade cheia — o giro do chassi não atrasa
+   * mais o deslocamento.
+   *
+   * É ângulo, e não um par `{x,y}` ou o antigo `turn`/`move`, por dois motivos. Ângulo é unitário
+   * por construção, então a diagonal não tem como andar √2 vezes mais rápido que o reto (o bug
+   * clássico do movimento em 8 direções nem chega a ser representável). E é a mesma unidade de
+   * `heading`, `turret` e `aim`: uma direção no jogo se escreve de um jeito só.
+   *
+   * Quem monta esse ângulo a partir das quatro teclas é `direcaoDeMovimento` do `@tank/protocol`,
+   * em ponta nenhuma — a rede continua carregando os booleanos.
+   */
+  mover: number | null;
   fire: boolean;
   /**
    * Ângulo absoluto (rad) para onde a torre deve apontar — no jogador, a direção do cursor do

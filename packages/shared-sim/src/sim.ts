@@ -36,7 +36,7 @@ function maxBulletsFor(playerCount: number): number {
   return MAX_BULLETS_BY_PLAYERS[n] ?? MAX_BULLETS;
 }
 
-const emptyInput: Input = { turn: 0, move: 0, fire: false };
+const emptyInput: Input = { mover: null, fire: false };
 
 // Quantas reflexões a bala pode TENTAR resolver dentro de um mesmo tick. Como ela morre no
 // rebote de nº MAX_BOUNCES + 1, este teto só precisa cobrir o caso de quina dupla antes da morte;
@@ -51,12 +51,20 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
     if (!tank.alive) continue;
     const input = inputs.get(tank.id) ?? emptyInput;
 
-    tank.heading = normalizeAngle(tank.heading + input.turn * TURN_RATE * dt);
+    // Movimento ABSOLUTO: o tanque anda para onde o input mandou, no mesmo tick, na velocidade
+    // cheia. O chassi vira para essa direção a TURN_RATE só como ENFEITE — nenhuma linha abaixo
+    // depende de `tank.heading` para deslocar. Com tank controls, estar virado errado custava
+    // 0,49 s de giro antes do primeiro pixel andado, e era isso que dobrava (133 px → 239 px) o
+    // raio em que sair da linha de uma bala é impossível.
+    //
+    // Diagonal não anda mais rápido que reto porque `mover` é um ÂNGULO: `cos`/`sin` sempre dão
+    // um vetor de módulo 1, não há o que normalizar depois.
+    if (input.mover !== null) {
+      tank.heading = angleTowards(tank.heading, input.mover, TURN_RATE * dt);
 
-    if (input.move !== 0) {
       const candidate: Vec2 = {
-        x: tank.x + Math.cos(tank.heading) * input.move * TANK_SPEED * dt,
-        y: tank.y + Math.sin(tank.heading) * input.move * TANK_SPEED * dt,
+        x: tank.x + Math.cos(input.mover) * TANK_SPEED * dt,
+        y: tank.y + Math.sin(input.mover) * TANK_SPEED * dt,
       };
       const resolved = circleVsAabbSlide(candidate, TANK_RADIUS, state.maze.walls);
       tank.x = resolved.x;

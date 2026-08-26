@@ -25,12 +25,16 @@ describe('mira no canal de input (Fase 4)', () => {
     expect(Math.abs(volta - (3 * Math.PI) / 2)).toBeLessThanOrEqual(MEIO_PASSO);
   });
 
-  it('decodeInputBits entrega a mira junto com as flags', () => {
+  it('decodeInputBits entrega a mira junto com a direção do movimento', () => {
     const input = decodeInputBits(BIT_UP | BIT_LEFT | BIT_FIRE, encodeAim(Math.PI));
-    expect(input.move).toBe(1);
-    expect(input.turn).toBe(-1);
+    // Cima + esquerda é a diagonal noroeste: −3π/4 (o Y do mundo cresce para baixo).
+    expect(input.mover).toBeCloseTo((-3 * Math.PI) / 4, 12);
     expect(input.fire).toBe(true);
     expect(Math.abs(input.aim! - Math.PI)).toBeLessThanOrEqual(MEIO_PASSO);
+  });
+
+  it('nenhuma tecla de direção = `mover` nulo (parado), não uma direção qualquer', () => {
+    expect(decodeInputBits(BIT_FIRE).mover).toBeNull();
   });
 
   it('pacote sem mira deixa `aim` indefinido — a torre fica onde está em vez de saltar para leste', () => {

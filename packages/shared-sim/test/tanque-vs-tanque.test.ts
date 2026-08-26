@@ -67,8 +67,8 @@ describe('colisão tanque × tanque', () => {
     const b = tanque('pB', 220, 168, Math.PI); // olhando para a esquerda
     const state = estado(maze, [a, b]);
     const inputs = new Map<string, Input>([
-      ['pA', { turn: 0, move: 1, fire: false }],
-      ['pB', { turn: 0, move: 1, fire: false }],
+      ['pA', { mover: 0, fire: false }],
+      ['pB', { mover: Math.PI, fire: false }],
     ]);
 
     let menorDistancia = Infinity;
@@ -92,8 +92,8 @@ describe('colisão tanque × tanque', () => {
     const empurrador = tanque('pB', larguraArena - 6 - TANK_RADIUS - DIAMETRO - 2, 168, 0);
     const state = estado(maze, [parado, empurrador]);
     const inputs = new Map<string, Input>([
-      ['pA', { turn: 0, move: 1, fire: false }],
-      ['pB', { turn: 0, move: 1, fire: false }],
+      ['pA', { mover: 0, fire: false }],
+      ['pB', { mover: 0, fire: false }],
     ]);
 
     for (let i = 0; i < 300; i++) {
@@ -115,7 +115,7 @@ describe('colisão tanque × tanque', () => {
     // arena estanque — a separação completa é o teste seguinte.
     const tanques = Array.from({ length: 10 }, (_, i) => tanque(`p${i}`, 168 + i * 1e-9, 168, 0));
     const state = estado(maze, tanques);
-    const inputs = new Map<string, Input>(tanques.map((t) => [t.id, { turn: 0, move: 0, fire: false }]));
+    const inputs = new Map<string, Input>(tanques.map((t) => [t.id, { mover: null, fire: false }]));
 
     for (let i = 0; i < 600; i++) {
       step(state, inputs, DT);
@@ -139,7 +139,7 @@ describe('colisão tanque × tanque', () => {
       tanque('p3', 169, 166, 0),
     ];
     const state = estado(maze, tanques);
-    const inputs = new Map<string, Input>(tanques.map((t) => [t.id, { turn: 0, move: 0, fire: false }]));
+    const inputs = new Map<string, Input>(tanques.map((t) => [t.id, { mover: null, fire: false }]));
 
     for (let i = 0; i < 300; i++) {
       step(state, inputs, DT);
@@ -176,8 +176,7 @@ describe('colisão tanque × tanque', () => {
       for (let i = 0; i < 6; i++) {
         const fase = (tick + i * 3) % 24;
         inputs.set(`p${i}`, {
-          turn: fase < 8 ? 1 : fase < 16 ? -1 : 0,
-          move: fase % 5 === 0 ? 0 : 1,
+          mover: fase % 5 === 0 ? null : ((fase % 8) * Math.PI) / 4,
           fire: fase % 7 === 0,
         });
       }
@@ -211,7 +210,7 @@ describe('colisão tanque × tanque', () => {
     const morto = tanque('pB', 130, 168, 0);
     morto.alive = false;
     const state = estado(maze, [vivo, morto]);
-    const inputs = new Map<string, Input>([['pA', { turn: 0, move: 0, fire: false }]]);
+    const inputs = new Map<string, Input>([['pA', { mover: null, fire: false }]]);
 
     step(state, inputs, DT);
     expect(vivo.x).toBe(120);

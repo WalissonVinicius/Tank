@@ -17,7 +17,7 @@ import type { Aabb, Input, Maze, SimState, Tank } from '@tank/shared-sim';
 import { BulletPredictor } from '../src/net/bullets.js';
 
 const DT = 1 / TICK_HZ;
-const PARADO: Input = { turn: 0, move: 0, fire: false };
+const PARADO: Input = { mover: null, fire: false };
 
 /** Caixa retangular oca: 4 paredes grossas, nada dentro. É o "corredor livre" da medição. */
 function caixa(largura: number, altura: number): Maze {
@@ -50,7 +50,7 @@ interface Medida {
 function medirLocal(maze: Maze, x: number, y: number, angulo: number, tetoTicks = 1200): Medida {
   const tank: Tank = { id: 'p0', x, y, heading: angulo, turret: angulo, alive: true, fireCooldownLeft: 0 };
   const state: SimState = { tick: 0, maze, tanks: new Map([['p0', tank]]), bullets: [], nextBulletId: 0 };
-  const inputs = new Map<string, Input>([['p0', { turn: 0, move: 0, fire: true, aim: angulo }]]);
+  const inputs = new Map<string, Input>([['p0', { mover: null, fire: true, aim: angulo }]]);
 
   let tickDoTiro = -1;
   let ricochetes = 0;
@@ -89,7 +89,7 @@ function medirOnline(maze: Maze, x: number, y: number, angulo: number, tetoTicks
 function tiroDe(maze: Maze, x: number, y: number, angulo: number): { x: number; y: number; angle: number } {
   const tank: Tank = { id: 'p0', x, y, heading: angulo, turret: angulo, alive: true, fireCooldownLeft: 0 };
   const state: SimState = { tick: 0, maze, tanks: new Map([['p0', tank]]), bullets: [], nextBulletId: 0 };
-  const eventos = step(state, new Map([['p0', { turn: 0, move: 0, fire: true, aim: angulo }]]), DT);
+  const eventos = step(state, new Map([['p0', { mover: null, fire: true, aim: angulo }]]), DT);
   const tiro = eventos.find((e) => e.type === 'shot');
   if (!tiro || tiro.type !== 'shot') throw new Error('o tanque não atirou');
   return { x: tiro.x, y: tiro.y, angle: tiro.angle };
@@ -195,7 +195,7 @@ describe('paridade local x online', () => {
 
     const tank: Tank = { id: 'p0', x: sp.x, y: sp.y, heading: ang, turret: ang, alive: true, fireCooldownLeft: 0 };
     const state: SimState = { tick: 0, maze, tanks: new Map([['p0', tank]]), bullets: [], nextBulletId: 0 };
-    step(state, new Map([['p0', { turn: 0, move: 0, fire: true, aim: ang }]]), DT);
+    step(state, new Map([['p0', { mover: null, fire: true, aim: ang }]]), DT);
     state.tick++;
     tank.alive = false; // mesma razão do `medirLocal`: a bala não pode morrer no próprio dono
 

@@ -69,24 +69,31 @@ export const MAZE_ASPECT_MAX = 2.7;
 /** Proporção assumida quando ninguém informou a da tela (16:9, a mais comum). */
 export const MAZE_ASPECT_DEFAULT = 16 / 9;
 
-// ORÇAMENTO de células por nº de jogadores (relatório G §2.3): ~12–14 células/jogador, braiding
-// padrão de 65%. 6 jogadores (12×7) é o valor validado no mockup; 10 jogadores (13×9) é o alvo
-// pedido pela especificação. As demais linhas interpolam a área total.
+// ORÇAMENTO de células por nº de jogadores (relatório G §2.3), braiding padrão de 65%.
 //
 // Desde a Fase 9 estas colunas e linhas NÃO são a forma final do labirinto: o que vale é o
 // PRODUTO (o total de células, isto é, a densidade calibrada). `mazeShape()` em shared-sim
 // redistribui esse mesmo total entre colunas e linhas para bater com a proporção da tela — é o
 // que faz a arena preencher a janela em vez de ficar com margem morta nos lados.
+//
+// Fase A4: com sala cheia a arena antiga (6 jog. 1008×588, 10 jog. 1092×756) levava 17–18 s para
+// atravessar a pé — quase metade dos 45 s de rodada é perseguição, não combate, e a pesquisa de
+// design de jogos de festa pede arenas menores. As linhas de 6 a 10 travaram `cols` em 8 ou 9 (o
+// intervalo que dá 10–13 s de travessia a `TANK_SPEED` fixo — ver `arena-densidade.test.ts`) e
+// `rows` foi o menor valor que ainda garante 100% de spawns válidos (`SPAWN_LOS_MIN_DIST`) nas 200
+// seeds × 6 proporções de tela de `maze.test.ts`, não um chute. `braidPct` ficou em 0,65 — igual
+// ao resto da tabela — de propósito: só `rows` já bastou para fechar a folga de spawn, então não
+// havia motivo para arriscar sem medir o efeito no ricochete (`_economia.ts` mede antes/depois).
 export const MAZE_BY_PLAYERS: Record<number, MazeDensity> = {
   2: { cols: 6, rows: 4, braidPct: 0.65 },
   3: { cols: 7, rows: 5, braidPct: 0.65 },
   4: { cols: 8, rows: 6, braidPct: 0.65 },
   5: { cols: 9, rows: 6, braidPct: 0.65 },
-  6: { cols: 12, rows: 7, braidPct: 0.65 },
-  7: { cols: 12, rows: 8, braidPct: 0.65 },
-  8: { cols: 13, rows: 8, braidPct: 0.65 },
-  9: { cols: 12, rows: 9, braidPct: 0.65 },
-  10: { cols: 13, rows: 9, braidPct: 0.65 },
+  6: { cols: 8, rows: 8, braidPct: 0.65 },
+  7: { cols: 8, rows: 8, braidPct: 0.65 },
+  8: { cols: 9, rows: 10, braidPct: 0.65 },
+  9: { cols: 9, rows: 11, braidPct: 0.65 },
+  10: { cols: 9, rows: 13, braidPct: 0.65 },
 };
 
 // Limite de balas vivas por jogador (relatório G §7.4, risco 7) — mantém a leitura da tela quando

@@ -89,7 +89,7 @@ interface DeathRecord {
 const MAX_CLIENTS = 24; // 10 jogadores + espectadores
 const ROUND_END_DURATION = 3;
 const SUDDEN_DEATH_INTERVAL = 3;
-const EMPTY_INPUT: Input = { turn: 0, move: 0, fire: false };
+const EMPTY_INPUT: Input = { mover: null, fire: false };
 
 export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadata }> {
   private sim: SimState | null = null;

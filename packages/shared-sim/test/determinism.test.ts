@@ -28,8 +28,7 @@ function inputsForTick(ids: readonly string[], tick: number): Map<string, Input>
   ids.forEach((id, idx) => {
     const phase = (tick + idx * 3) % 24;
     inputs.set(id, {
-      turn: phase < 8 ? 1 : phase < 16 ? -1 : 0,
-      move: phase % 5 === 0 ? 0 : 1,
+      mover: phase % 5 === 0 ? null : ((phase % 8) * Math.PI) / 4,
       fire: phase % 7 === 0,
     });
   });
