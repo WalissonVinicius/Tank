@@ -6,6 +6,7 @@ build/
 
 # Dados de runtime (SQLite do ranking) e segredos
 data/
+data-teste/
 *.db
 *.db-journal
 *.sqlite
