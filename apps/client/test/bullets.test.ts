@@ -18,6 +18,7 @@ const SPAWN = {
   angle: ANGULO,
   vx: Math.cos(ANGULO) * BULLET_SPEED,
   vy: Math.sin(ANGULO) * BULLET_SPEED,
+  ricochete: 0,
   tick: 0,
 };
 

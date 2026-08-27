@@ -81,7 +81,7 @@ function medirOnline(
   tetoTicks = 1200,
 ): Medida {
   const preditor = new BulletPredictor(maze);
-  preditor.spawn({ id: 'b0', ownerId: 'p0', x, y, angle: angulo, vx, vy, tick: 0 });
+  preditor.spawn({ id: 'b0', ownerId: 'p0', x, y, angle: angulo, vx, vy, ricochete: 0, tick: 0 });
 
   let ricochetes = 0;
   for (let t = 0; t < tetoTicks; t++) {
@@ -214,7 +214,7 @@ describe('paridade local x online', () => {
     tank.alive = false; // mesma razão do `medirLocal`: a bala não pode morrer no próprio dono
 
     const preditor = new BulletPredictor(maze);
-    preditor.spawn({ id: 'b0', ownerId: 'p0', x: boca.x, y: boca.y, angle: boca.angle, vx: boca.vx, vy: boca.vy, tick: 0 });
+    preditor.spawn({ id: 'b0', ownerId: 'p0', x: boca.x, y: boca.y, angle: boca.angle, vx: boca.vx, vy: boca.vy, ricochete: 0, tick: 0 });
     // O tick que criou a bala no modo local já a moveu; o preditor precisa do mesmo passo para
     // os dois relógios ficarem alinhados.
     preditor.tick(DT);

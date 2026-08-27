@@ -30,6 +30,7 @@ import { rendererAtivo } from '../render/Renderer.js';
 import { SOM_ABATE, SOM_AUTOGOL_ZOEIRA, tocar, tocarComAtraso } from '../audio.js';
 import { ICONE, img } from './icons.js';
 import { carimboDeAutogol, nomeColorido, type Ator } from './zoeira.js';
+import { POWERUP, type TipoPowerUp } from '@tank/protocol';
 
 export interface HudState {
   round: number;
@@ -44,6 +45,13 @@ export interface HudState {
   reconnecting: boolean;
   /** `true` só na fase `playing`: é o que tira os módulos supérfluos de cena. */
   emAcao: boolean;
+  /**
+   * Power-ups ativos NO JOGADOR LOCAL (P1), com o relógio de cada um. Vazio = nenhum.
+   *
+   * Fica logo acima da munição, porque é o mesmo assunto — "o que EU tenho agora" — e porque os
+   * outros quatro cantos já são de rodada, tempo, killfeed e eliminação.
+   */
+  efeitos?: readonly { tipo: TipoPowerUp; restante: number; duracao: number }[];
   /** Partida de TREINO contra bots (Fase 12 §7) — ganha um selo discreto, para não confundir com partida valendo. */
   treino?: boolean;
 }
@@ -81,6 +89,7 @@ let els: {
   relogio: HTMLElement;
   vivos: HTMLElement;
   feedItens: HTMLElement;
+  efeitos: HTMLElement;
   municao: HTMLElement;
   municaoNome: HTMLElement;
   marcas: HTMLElement;
@@ -140,6 +149,11 @@ function ensureBuilt(root: HTMLElement): void {
     <!-- UM grupo de marcas, e só. O ícone de pente que ficava ao lado saiu na Fase 10: ele
          desenhava três cartuchos, os pips desenhavam outros três, e a leitura virava
          "dois tipos de munição". -->
+    <!-- Power-ups ativos (P1): mesma coluna da munição, logo acima. Cada faixa traz o símbolo do
+         item que foi pego, o nome curto e uma barra que ESVAZIA — quem pegou precisa saber quanto
+         falta, e a barra diz isso sem obrigar a ler número. -->
+    <div id="hud-efeitos"></div>
+
     <div id="hud-municao">
       <div class="topo"><span class="lbl">MUNIÇÃO</span><b id="hud-municao-nome"></b></div>
       <div class="marcas" id="hud-marcas"></div>
@@ -176,6 +190,7 @@ function ensureBuilt(root: HTMLElement): void {
     relogio: root.querySelector('#hud-relogio')!,
     vivos: root.querySelector('#hud-vivos')!,
     feedItens: root.querySelector('#hud-feed')!,
+    efeitos: root.querySelector('#hud-efeitos')!,
     municao: root.querySelector('#hud-municao')!,
     municaoNome: root.querySelector('#hud-municao-nome')!,
     marcas: root.querySelector('#hud-marcas')!,
@@ -254,6 +269,9 @@ function carimbarAutogol(): void {
 
 export function resetKillfeed(): void {
   feed.length = 0;
+  // Rodada nova começa sem efeito nenhum — a chave zerada força a faixa a ser redesenhada.
+  lastEfeitosChave = '';
+  if (els) els.efeitos.innerHTML = '';
   desenharFeed();
   // Rodada nova não herda o carimbo da morte da rodada anterior.
   window.clearTimeout(carimboTimer);
@@ -312,6 +330,70 @@ function desenharPips(total: number, atual: number): void {
   }).join('');
 }
 
+// ---------------------------------------------------------------------------------------------
+// Power-ups ativos (P1)
+//
+// O símbolo é o MESMO desenho do item no chão e do crachá sobre o tanque (`render/powerups.ts`),
+// refeito em SVG porque aqui é DOM. Um vocabulário só para os três lugares: quem viu o
+// zigue-zague no chão reconhece o zigue-zague no canto sem aprender nada de novo.
+// ---------------------------------------------------------------------------------------------
+
+const SEM_EFEITOS: readonly { tipo: TipoPowerUp; restante: number; duracao: number }[] = [];
+/** Abaixo disto a faixa pisca — a expiração tem que ser vista ANTES de acontecer. */
+const EFEITO_ACABANDO_S = 3;
+let lastEfeitosChave = '';
+
+function corCss(cor: number): string {
+  return '#' + (cor >>> 0).toString(16).padStart(6, '0');
+}
+
+function svgDoEfeito(tipo: TipoPowerUp, cor: string): string {
+  const attrs = `viewBox="-10 -10 20 20" width="17" height="17" fill="none" stroke="${cor}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"`;
+  switch (tipo) {
+    case 'ricochete':
+      return `<svg ${attrs}><polyline points="-7,3 -1,-5 5,3 8,-1"/></svg>`;
+    case 'municao':
+      return `<svg ${attrs}><circle cx="-4" cy="0" r="2.6" fill="${cor}" stroke="none"/><circle cx="4" cy="0" r="2.6" fill="${cor}" stroke="none"/><path d="M-4,-5.5 L-4,-8 M4,-5.5 L4,-8"/></svg>`;
+    case 'recarga':
+      return `<svg ${attrs}><polygon points="1,-8 -5,0.5 -0.5,0.5 -2,8 5,-0.5 0.5,-0.5" fill="${cor}" stroke="none"/></svg>`;
+    case 'turbo':
+      return `<svg ${attrs}><polyline points="-6,-5 -1,0 -6,5"/><polyline points="1,-5 6,0 1,5"/></svg>`;
+  }
+}
+
+/**
+ * A estrutura só é reescrita quando a LISTA de efeitos muda; a barra e o segundo são atualizados
+ * por atributo a cada frame. Reescrever o `innerHTML` todo frame reiniciaria a animação de
+ * entrada 60×/s e a faixa piscaria sozinha.
+ */
+function desenharEfeitos(lista: readonly { tipo: TipoPowerUp; restante: number; duracao: number }[]): void {
+  if (!els) return;
+  const chave = lista.map((e) => e.tipo).join(',');
+  if (chave !== lastEfeitosChave) {
+    lastEfeitosChave = chave;
+    els.efeitos.innerHTML = lista
+      .map((e) => {
+        const def = POWERUP[e.tipo];
+        const cor = corCss(def.cor);
+        return `<div class="efeito" style="--acento:${cor}"><span class="sim">${svgDoEfeito(e.tipo, cor)}</span><div class="corpo"><b>${def.curto}</b><div class="barra"><i></i></div></div><span class="seg"></span></div>`;
+      })
+      .join('');
+  }
+
+  const nós = els.efeitos.children;
+  lista.forEach((e, i) => {
+    const nó = nós[i] as HTMLElement | undefined;
+    if (!nó) return;
+    const fracao = Math.max(0, Math.min(1, e.duracao > 0 ? e.restante / e.duracao : 0));
+    const barra = nó.querySelector('.barra i') as HTMLElement | null;
+    if (barra) barra.style.transform = `scaleX(${fracao})`;
+    const seg = String(Math.max(0, Math.ceil(e.restante)));
+    const segEl = nó.querySelector('.seg');
+    if (segEl && segEl.textContent !== seg) segEl.textContent = seg;
+    nó.classList.toggle('acabando', e.restante <= EFEITO_ACABANDO_S);
+  });
+}
+
 export function renderHud(root: HTMLElement, state: HudState): void {
   ensureBuilt(root);
   if (!els) return;
@@ -359,6 +441,9 @@ export function renderHud(root: HTMLElement, state: HudState): void {
   }
 
   if (els.municaoNome.textContent !== state.meName) els.municaoNome.textContent = state.meName;
+
+  // Eliminado não tem efeito para mostrar: o servidor já encerrou todos ao matá-lo.
+  desenharEfeitos(state.meAlive ? (state.efeitos ?? SEM_EFEITOS) : SEM_EFEITOS);
 
   if (state.ammoMax !== lastAmmoMax) {
     els.marcas.innerHTML = Array.from({ length: state.ammoMax }, () => '<i></i>').join('');

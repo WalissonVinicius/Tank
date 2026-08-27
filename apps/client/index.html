@@ -2,7 +2,15 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` põe o canvas embaixo do entalhe (é o que o `env(safe-area-inset-*)`
+         do CSS depois compensa, só no HUD). `user-scalable=no` + `maximum-scale=1` matam o zoom
+         por pinça, que num jogo de dois polegares acontece o tempo todo sem querer — o iOS ignora
+         os dois, e é por isso que a camada de toque também barra `gesturestart`. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Tank Ricochete</title>
     <meta name="theme-color" content="#0b0f1a" />
     <!-- Ícone da aba desenhado inline (SVG procedural), no mesmo espírito do resto da arte: mira
@@ -34,6 +42,18 @@
       <!-- Menu de pausa (Esc). Também overlay: a arena continua rodando atrás dele, porque a
            partida NÃO para para os outros jogadores. -->
       <div id="pausa"></div>
+
+      <!-- Analógicos virtuais (M1). Só entram em cena em aparelho de toque; no teclado a camada
+           nem é montada. Ficam por cima do canvas e ABAIXO das telas de interface. -->
+      <div id="toque"></div>
+
+      <!-- Botão de pausa do celular: o menu existe desde a Fase 13, mas só abria com Esc. -->
+      <button id="btn-pausa-toque" type="button" title="PAUSA" aria-label="PAUSA">
+        <i></i><i></i>
+      </button>
+
+      <!-- Aviso de virar o aparelho. Cobre tudo enquanto a tela estiver em pé. -->
+      <div id="gire"></div>
 
       <!-- Fora das `.tela` de propósito: tela cheia vale no lobby, no jogo e no placar, e a
            Fullscreen API exige que a chamada saia de um gesto do usuário (clique ou tecla F). -->

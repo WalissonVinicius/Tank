@@ -57,7 +57,7 @@ const CINZA_TAU_S = 0.11;
  * disso a cadeia passa a rodar na resolução que devolve ~1,95 Mpx efetivos, que é exatamente o
  * ponto em que este GPU fecha 60 fps.
  */
-export type NivelFx = 'alto' | 'reduzido';
+export type NivelFx = 'alto' | 'reduzido' | 'minimo';
 
 export interface Qualidade {
   nivel: NivelFx;
@@ -77,6 +77,12 @@ const PERFIS: Record<NivelFx, PerfilFx> = {
   // e o ruído dele já era imperceptível numa tela desse tamanho. `pixelSize` maior compensa os
   // dois kernels de blur que saíram, mantendo o halo do bloom com a mesma largura aparente.
   reduzido: { bloomQuality: 2, bloomPixelSize: 1.6, crt: false },
+  // Degrau do CELULAR (M1 §4). O `reduzido` foi calibrado num Intel Iris Xe; um GPU de celular é
+  // uma fração disso e ainda divide banda de memória com a CPU. Aqui o bloom fica com UM passe de
+  // Kawase (quality 1) e um `pixelSize` grande o bastante para o halo continuar do mesmo tamanho
+  // aparente. O bloom NÃO sai: é ele que faz a bala parecer incandescente, e sem isso o jogo
+  // deixa de ser neon-noir e vira um diagrama.
+  minimo: { bloomQuality: 1, bloomPixelSize: 2.6, crt: false },
 };
 
 /**
@@ -106,7 +112,26 @@ const ALVO_MPX = 2.2;
 /** Piso da resolução: abaixo disto a arena começa a ler como borrada, não como suave. */
 const RES_MIN = 0.55;
 
-export function qualidadePara(megapixels: number): Qualidade {
+/**
+ * Orçamento de pixels da cadeia de filtros no CELULAR (M1 §4).
+ *
+ * Não é o mesmo número do desktop dividido por um palpite: um aparelho deitado com o DPR já
+ * limitado a 1,5 (ver `DPR_MAX_TOQUE`) entrega ~0,74 MPX de framebuffer, o que passaria folgado
+ * pelo orçamento de 1,5 do desktop e cairia na cadeia CHEIA — bloom quality 4 mais CRT — no
+ * hardware mais fraco que o jogo vai encontrar. Este orçamento força o degrau `minimo` sempre no
+ * toque e ainda derruba a resolução da cadeia quando o aparelho é grande (tablet deitado).
+ */
+const ALVO_MPX_TOQUE = 0.55;
+
+/**
+ * Escolhe o degrau de pós-processamento. `toque` liga a régua do celular: degrau `minimo` sempre,
+ * e resolução de cadeia proporcional ao orçamento mais apertado.
+ */
+export function qualidadePara(megapixels: number, toque = false): Qualidade {
+  if (toque) {
+    const bruta = Math.sqrt(ALVO_MPX_TOQUE / Math.max(0.01, megapixels));
+    return { nivel: 'minimo', resolucao: Math.max(RES_MIN, Math.min(1, Math.round(bruta * 100) / 100)) };
+  }
   if (megapixels <= ORCAMENTO_MPX) return { nivel: 'alto', resolucao: 1 };
   const bruta = Math.sqrt(ALVO_MPX / megapixels);
   return { nivel: 'reduzido', resolucao: Math.max(RES_MIN, Math.min(1, Math.round(bruta * 100) / 100)) };

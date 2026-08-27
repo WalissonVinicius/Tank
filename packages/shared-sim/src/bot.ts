@@ -101,6 +101,13 @@ export const BOT_DIFFICULTY: Record<'facil' | 'medio' | 'dificil', BotConfig> = 
 export interface BotMundo {
   /** Balas em voo, inclusive as dele — a própria bala também mata depois de `SELF_IMMUNITY`. */
   bullets: readonly Bullet[];
+  /**
+   * Itens de power-up no chão AGORA (P1). Sem eles o bot passa reto por um ricochete duplo a meia
+   * célula de distância enquanto o humano do lado desvia para pegar — e a diferença fica visível
+   * em uma rodada. Só a posição interessa aqui: o bot desvia para o item mais perto, não escolhe
+   * por tipo (escolher exigiria um modelo de valor por efeito que a IA determinística não tem).
+   */
+  powerups?: readonly Vec2[];
 }
 
 function normalizeAngle(a: number): number {
@@ -702,6 +709,40 @@ export function botInput(
 // Medido no `_bench.ts` com 10 bots difíceis, antes → depois: média 0,20 → 0,06 ms, p99 1,76 →
 // 0,49 ms, pior caso 4,2 → 1,6 ms.
 
+// ------------------------------------------------------------------------------------------
+// Power-ups (P1) — o bot desvia para pegar
+// ------------------------------------------------------------------------------------------
+
+/** Até onde o bot considera trocar o destino da rota por um item, em px. */
+const RAIO_DE_INTERESSE_POR_ITEM = CELL * 4;
+/**
+ * Item a esta distância é pego mesmo em pleno duelo: o desvio custa menos que um giro de torre, e
+ * é o caso em que "bot passou reto por um ricochete duplo encostado nele" fica mais evidente.
+ */
+const RAIO_DE_ITEM_IMPERDIVEL = CELL * 1.5;
+
+/**
+ * Item mais próximo dentro do raio, ou `null`. Só distância — o bot não pesa tipo, porque pesar
+ * exigiria um modelo de valor por efeito que a IA determinística não tem e que viraria mais um
+ * número de tuning para calibrar. Custo: um laço sobre no máximo `POWERUP_MAX_NO_CHAO` itens.
+ *
+ * Empate resolvido pelo primeiro da lista, que chega na ordem da agenda — determinística.
+ */
+function itemMaisProximo(tank: Tank, itens: readonly Vec2[] | undefined, raio: number): Vec2 | null {
+  if (!itens || itens.length === 0) return null;
+  let melhor: Vec2 | null = null;
+  let melhorDist2 = raio * raio;
+  for (const item of itens) {
+    const dx = item.x - tank.x;
+    const dy = item.y - tank.y;
+    const dist2 = dx * dx + dy * dy;
+    if (dist2 >= melhorDist2) continue;
+    melhorDist2 = dist2;
+    melhor = item;
+  }
+  return melhor;
+}
+
 /** BFS custa caro: 6 recálculos de rota por segundo bastam, o inimigo não troca de célula mais rápido. */
 const TICKS_ENTRE_RECALCULO_DE_ROTA = 10;
 /**
@@ -748,6 +789,8 @@ export interface Bot {
 export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot {
   let waypoint: Vec2 | null = null;
   let waypointTick: number | null = null;
+  /** O waypoint em cache foi traçado até um item, e não até o inimigo (P1). */
+  let waypointEraItem = false;
 
   let planoDeTiro: number | null = null;
   let planoConcluidoTick: number | null = null;
@@ -925,11 +968,31 @@ export function makeBot(rng: Rng, config: BotConfig = BOT_DIFFICULTY.medio): Bot
         }
         if (cobertura !== null) rumo = cobertura;
       } else if (!temLos) {
-        if (waypointTick === null || tick - waypointTick >= TICKS_ENTRE_RECALCULO_DE_ROTA) {
-          waypoint = proximoPassoMemorizado(maze, tank, target);
+        // P1: sem o inimigo à vista, um item dentro do raio de interesse VIRA o destino da rota.
+        // O caminho continua saindo do mesmo BFS — o bot não corta parede para pegar power-up.
+        const item = itemMaisProximo(tank, mundo?.powerups, RAIO_DE_INTERESSE_POR_ITEM);
+        const destino = item ?? target;
+        // Trocar de destino invalida o waypoint na hora: esperar os 10 ticks do throttle faria o
+        // bot andar quase 1/6 de segundo na direção do alvo antigo depois de mudar de ideia.
+        const trocouDeDestino = (item !== null) !== waypointEraItem;
+        if (waypointTick === null || trocouDeDestino || tick - waypointTick >= TICKS_ENTRE_RECALCULO_DE_ROTA) {
+          waypoint = proximoPassoMemorizado(maze, tank, destino);
           waypointTick = tick;
+          waypointEraItem = item !== null;
         }
-        moveTarget = waypoint ?? target;
+        moveTarget = waypoint ?? destino;
+      }
+
+      // P1, item encostado: com um item a menos de 1,5 célula E sem parede no meio, ele atropela
+      // qualquer destino escolhido acima — inclusive a perseguição com o inimigo à vista. O que
+      // NÃO atropela é a fuga: sair da linha de uma bala continua valendo mais que qualquer
+      // power-up, senão o bot morre indo buscar o item que ia salvá-lo.
+      if (fuga === null) {
+        const encostado = itemMaisProximo(tank, mundo?.powerups, RAIO_DE_ITEM_IMPERDIVEL);
+        if (encostado && hasLineOfSight(tank, encostado, maze.walls)) {
+          moveTarget = encostado;
+          rumo = null;
+        }
       }
 
       if (config.usaParede && adversarioUsaRicochete) {

@@ -1,0 +1,612 @@
+/* ============================================================================================
+   TANK RICOCHETE — camada de CELULAR (M1)
+   --------------------------------------------------------------------------------------------
+   Arquivo separado do `style.css` de propósito, e não por organização: TUDO aqui está atrás de
+   `body.toque` (ou de `@media (pointer: coarse)`), e a restrição 1 da M1 é não regredir o
+   desktop. Um arquivo só para o que é condicional torna a promessa verificável de relance —
+   quem quiser conferir que o teclado não mudou lê o seletor, não o diff.
+
+   Três assuntos moram aqui:
+     1. os dois analógicos virtuais (`#toque`), desenhados em DOM como o resto do HUD;
+     2. o aviso de virar o aparelho (`#gire`);
+     3. os ajustes de HUD e de telas para caber deitado, com área segura e alvo de 44 px.
+   ============================================================================================ */
+
+:root {
+  /* Entalhe e barra de gestos. `env()` devolve 0 em quem não tem — o desktop lê zero em tudo. */
+  --sa-t: env(safe-area-inset-top, 0px);
+  --sa-r: env(safe-area-inset-right, 0px);
+  --sa-b: env(safe-area-inset-bottom, 0px);
+  --sa-l: env(safe-area-inset-left, 0px);
+}
+
+/* Duplo toque para dar zoom é a maior armadilha de um jogo de toque rápido: dois tiros seguidos
+   viravam zoom. `manipulation` mata o zoom por duplo toque SEM matar a rolagem, que o lobby ainda
+   usa em tela baixa. O bloqueio total (`none`) fica só onde o jogo captura o dedo. */
+body.toque {
+  touch-action: manipulation;
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body.toque #game,
+body.toque #toque,
+body.toque #hud {
+  touch-action: none;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   ANALÓGICOS VIRTUAIS
+   --------------------------------------------------------------------------------------------- */
+
+#toque {
+  display: none;
+}
+
+body.toque #toque {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  /* A camada inteira é o alvo dos dedos — é ela que decide a mão pela metade da tela. Fica ABAIXO
+     do lobby e do placar em z-index, e some fora do jogo (`#toque.desligado`). */
+  pointer-events: auto;
+}
+
+body.toque #toque.desligado {
+  display: none;
+}
+
+#toque .analogico {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc(var(--raio, 56px) * 2);
+  height: calc(var(--raio, 56px) * 2);
+  opacity: 0.34;
+  transition: opacity 140ms ease;
+  will-change: transform;
+}
+
+/* Segurando, o controle acende. Parado, ele é só um fantasma que ensina onde o polegar descansa —
+   não compete com a arena pela atenção. */
+#toque .analogico.segurando {
+  opacity: 0.92;
+}
+
+#toque .base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 3px solid var(--traco);
+  background: rgba(20, 28, 54, 0.5);
+  box-shadow: inset 0 0 0 2px rgba(234, 240, 255, 0.14);
+}
+
+#toque .botao {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--raio, 56px) * 0.86);
+  height: calc(var(--raio, 56px) * 0.86);
+  margin-left: calc(var(--raio, 56px) * -0.43);
+  margin-top: calc(var(--raio, 56px) * -0.43);
+  border-radius: 50%;
+  border: 3px solid var(--traco);
+  box-shadow: 0 3px 0 var(--traco);
+  will-change: transform;
+}
+
+#toque .esq .botao {
+  background: var(--azul);
+}
+
+#toque .dir .botao {
+  background: var(--amarelo);
+}
+
+/* O analógico direito atira ao soltar; arrastar de volta ao centro CANCELA. O vermelho é o único
+   aviso possível sem texto: "solte agora e não sai tiro". */
+#toque .dir.cancelando .botao {
+  background: var(--vermelho);
+}
+
+#toque .dir.cancelando .base {
+  border-color: var(--vermelho);
+}
+
+/* Seta de mira: repete na mão o que a linha de mira desenha na arena. `transform-origin` no
+   centro do anel para ela girar em torno do polegar, não do próprio bico. */
+#toque .seta {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--raio, 56px) * 1.5);
+  height: 0;
+  margin-top: -1px;
+  border-top: 4px dashed var(--amarelo);
+  transform-origin: 0 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   VIRE O APARELHO
+   --------------------------------------------------------------------------------------------- */
+
+#gire {
+  display: none;
+}
+
+#gire.ativa {
+  display: flex;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  align-items: center;
+  justify-content: center;
+  padding: calc(20px + var(--sa-t)) calc(20px + var(--sa-r)) calc(20px + var(--sa-b))
+    calc(20px + var(--sa-l));
+  background: #0b0f1a;
+}
+
+#gire .cartao-gire {
+  max-width: 340px;
+  text-align: center;
+  padding: 24px 22px 22px;
+  background: var(--painel);
+  border: var(--b) solid var(--traco);
+  border-radius: 20px;
+  box-shadow: 0 7px 0 var(--traco);
+}
+
+#gire .desenho svg {
+  width: 132px;
+  height: 132px;
+  display: block;
+  margin: 0 auto 6px;
+}
+
+#gire .aparelho {
+  fill: var(--painel-3);
+  stroke: var(--traco);
+  stroke-width: 4;
+  transform-origin: 60px 60px;
+  animation: gire-aparelho 2.4s cubic-bezier(0.6, 0, 0.35, 1) infinite;
+}
+
+#gire .tela-do-aparelho {
+  fill: var(--azul);
+  opacity: 0.5;
+  transform-origin: 60px 60px;
+  animation: gire-aparelho 2.4s cubic-bezier(0.6, 0, 0.35, 1) infinite;
+}
+
+#gire .seta-gire {
+  stroke: var(--amarelo);
+  fill: var(--amarelo);
+}
+
+@keyframes gire-aparelho {
+  0%,
+  22% {
+    transform: rotate(0deg);
+  }
+  48%,
+  100% {
+    transform: rotate(-90deg);
+  }
+}
+
+#gire h2 {
+  margin: 4px 0 6px;
+  font-family: var(--fd);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--creme);
+  text-shadow: var(--contorno-fino);
+}
+
+#gire p {
+  margin: 0 0 16px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--texto-fraco);
+}
+
+#gire .botao-jogo {
+  width: 100%;
+  min-height: 46px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #gire .aparelho,
+  #gire .tela-do-aparelho {
+    animation: none;
+    transform: rotate(-90deg);
+  }
+}
+
+/* Em retrato o jogo não roda por baixo do aviso à toa: o canvas some da composição e as telas
+   de interface param de disputar o dedo. A partida continua no servidor — o que para é a tela. */
+body.em-retrato #game,
+body.em-retrato #toque,
+body.em-retrato .tela,
+body.em-retrato #contagem,
+body.em-retrato #pausa,
+body.em-retrato #btn-tela-cheia {
+  visibility: hidden;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   HUD DEITADO
+   --------------------------------------------------------------------------------------------- */
+
+/* Área segura em todo canto do HUD. As medidas continuam vindo do `--k` de `ui/layout.ts` (que
+   no toque tem piso próprio, 0,6); o que muda aqui é só somar o entalhe. */
+body.toque #hud-relogio {
+  top: calc(var(--k) * 10px + var(--sa-t));
+}
+
+body.toque #hud-feed {
+  top: calc(var(--k) * 10px + var(--sa-t));
+  right: calc(var(--k) * 10px + var(--sa-r));
+  max-width: 44vw;
+}
+
+/* A placa de RODADA sai de cena durante a ação: é a informação menos usada do HUD e ocupava o
+   único canto que sobra para o botão de pausa num aparelho sem tecla Esc. */
+body.toque #hud.em-acao #hud-rodada {
+  display: none;
+}
+
+body.toque #hud-rodada {
+  left: calc(var(--k) * 10px + var(--sa-l));
+  top: calc(var(--k) * 10px + var(--sa-t));
+}
+
+/* MUNIÇÃO sobe para a faixa lateral esquerda, logo abaixo da reserva do relógio: o canto de baixo
+   virou casa do polegar. Fica só o essencial — quantas balas estão prontas. O nome do jogador e o
+   rótulo saem (num celular deitado eles roubavam metade da faixa e ninguém lê o próprio nome no
+   meio do tiroteio). */
+body.toque #hud-municao {
+  left: calc(8px + var(--sa-l));
+  bottom: auto;
+  top: calc(var(--k) * 98px + 12px + var(--sa-t));
+  padding: calc(var(--k) * 6px) calc(var(--k) * 9px) calc(var(--k) * 7px);
+}
+
+body.toque #hud-municao .topo {
+  display: none;
+}
+
+body.toque #hud-municao .status {
+  margin-top: calc(var(--k) * 4px);
+  font-size: calc(var(--k) * 10px);
+  letter-spacing: 0.08em;
+  max-width: calc(var(--k) * 96px);
+}
+
+/* ELIMINADO desce para o RODAPÉ CENTRAL. No desktop ele mora no canto inferior direito, que no
+   celular é a casa do polegar de mirar; e o canto superior direito, tentado antes, é onde o
+   killfeed empilha — os dois cartões se sobrepunham na hora exata em que a pessoa mais quer ler
+   quem a matou. Embaixo, no meio, ele fica entre os dois analógicos e só encosta na faixa final
+   da arena, que quem está eliminado não precisa enxergar por inteiro.
+
+   O deslocamento usa `translate` (propriedade própria) e não `transform`: a animação de entrada
+   do cartão anima `transform` e terminaria em `transform: none`, jogando o cartão de volta para
+   fora do centro no último quadro. */
+body.toque #hud-eliminado {
+  right: auto;
+  top: auto;
+  bottom: calc(4px + var(--sa-b));
+  left: 50%;
+  translate: -50% 0;
+  padding: calc(var(--k) * 5px) calc(var(--k) * 12px);
+  gap: calc(var(--k) * 8px);
+}
+
+body.toque #hud-eliminado .icone-3d {
+  width: calc(var(--k) * 22px);
+  height: calc(var(--k) * 22px);
+}
+
+body.toque #hud-eliminado .titulo {
+  font-size: calc(var(--k) * 15px);
+}
+
+body.toque #hud-eliminado .sub {
+  font-size: calc(var(--k) * 10px);
+  margin-top: calc(var(--k) * 2px);
+}
+
+/* Botão de pausa: num celular não existe Esc, e sem ele o menu (sair da sala, som, esquema de
+   controle) ficaria inalcançável. Mora no canto que a placa de RODADA desocupou. */
+#btn-pausa-toque {
+  display: none;
+}
+
+body.toque #btn-pausa-toque {
+  display: flex;
+  position: absolute;
+  z-index: 12;
+  left: calc(8px + var(--sa-l));
+  top: calc(8px + var(--sa-t));
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--texto);
+  background: var(--painel-2);
+  border: 2px solid var(--traco);
+  border-radius: 12px;
+  box-shadow: 0 3px 0 var(--traco);
+  opacity: 0.8;
+}
+
+body.toque #btn-pausa-toque i {
+  display: block;
+  width: 5px;
+  height: 17px;
+  background: currentColor;
+  border-radius: 2px;
+}
+
+/* Fora do jogo o menu se alcança pelos próprios botões da tela; o de pausa sai junto com o de
+   tela cheia. */
+body.toque:not(.em-jogo) #btn-pausa-toque {
+  display: none;
+}
+
+/* No celular o botão de tela cheia é útil o tempo todo fora da ação (ganha a barra do navegador
+   de volta) — e continua sumindo durante a rodada, como no desktop. Só recua para não ficar
+   embaixo do indicador de home. */
+body.toque #btn-tela-cheia {
+  right: calc(var(--k) * 12px + var(--sa-r));
+  bottom: calc(var(--k) * 12px + var(--sa-b));
+  min-height: 44px;
+}
+
+/* ---------------------------------------------------------------------------------------------
+   TELAS DE INTERFACE NO DEDO
+   Alvo de 44 px, nada dependendo de `hover`, e as telas altas passam a rolar em vez de vazar.
+   --------------------------------------------------------------------------------------------- */
+
+body.toque .botao-jogo {
+  min-height: 46px;
+}
+
+body.toque #campo-nome,
+body.toque #campo-codigo {
+  min-height: 46px;
+  /* Abaixo de 16px o iOS dá zoom no campo ao focar e nunca mais devolve o enquadramento. */
+  font-size: max(16px, 1em);
+}
+
+body.toque #lobby-cores button,
+body.toque #treino-bots button,
+body.toque #lobby-config .op,
+body.toque #lobby-sala .cabeca-vagas .controle-bots button,
+body.toque #btn-copiar {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Toda tela do jogo rola no celular deitado: 390 px de altura não cabem o cartão de entrada nem o
+   painel final inteiros, e o certo é deixar chegar no botão, não encolher a tipografia até sumir. */
+body.toque .tela.ativa {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding-top: var(--sa-t);
+  padding-bottom: var(--sa-b);
+}
+
+/* Deitado num celular a marca do jogo divide a largura com o cartão e some antes dele: quem abriu
+   o link já sabe em que jogo entrou; o que ele precisa é do campo de nome. */
+@media (pointer: coarse) and (max-height: 460px) {
+  #lobby.em-entrada #lobby-entrada {
+    align-items: flex-start;
+    padding: 10px 14px 18px;
+    gap: 16px;
+  }
+
+  #lobby-entrada .marca .regra,
+  #lobby-entrada .linha-topo {
+    display: none;
+  }
+
+  #lobby-entrada h1 {
+    font-size: clamp(30px, 5.4vw, 52px);
+  }
+
+  /* O cartão de entrada inteiro encolhe. Ele foi desenhado em 900p; num celular deitado de 342 px
+     os mesmos 24 px de padding e o código em 32 px empurram o botão CRIAR para fora da tela, e a
+     pessoa tem que rolar para encontrar a ação principal. Aqui nada é escondido: o que muda é a
+     folga, que é onde a altura estava indo. Os campos ficam nos 46 px de alvo mínimo. */
+  /* O cartão vira DUAS COLUNAS. Empilhado ele tem 445 px numa tela de 342, e a ação principal
+     (CRIAR UMA SALA NOVA) nasce abaixo da dobra — num jogo cuja porta de entrada é justamente
+     criar a sala e mandar o link. Deitado sobra largura; a coluna da esquerda pede a identidade
+     (nome + código + ENTRAR) e a da direita oferece as outras duas portas. */
+  #lobby-entrada .cartao {
+    width: min(520px, 74vw);
+    padding: 12px 14px 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      'nome   criar'
+      'cod    aviso'
+      'entrar treino';
+    column-gap: 14px;
+    align-content: start;
+  }
+
+  #lobby-entrada .cartao > .campo {
+    grid-area: nome;
+  }
+
+  #lobby-entrada .cartao > .campo.codigo {
+    grid-area: cod;
+  }
+
+  #lobby-entrada #btn-entrar {
+    grid-area: entrar;
+    align-self: start;
+  }
+
+  #lobby-entrada #btn-criar {
+    grid-area: criar;
+    align-self: start;
+  }
+
+  #lobby-entrada #lobby-aviso {
+    grid-area: aviso;
+  }
+
+  #lobby-entrada .cartao > .treino {
+    grid-area: treino;
+    margin-top: 0;
+    padding-top: 9px;
+  }
+
+  /* O "ou" separava duas ações empilhadas; lado a lado, elas já se separam sozinhas. */
+  #lobby-entrada .ou {
+    display: none;
+  }
+
+  #lobby-entrada .campo {
+    margin-bottom: 8px;
+  }
+
+  #lobby-entrada .campo > span {
+    font-size: 10px;
+    margin-bottom: 3px;
+  }
+
+  #lobby-entrada input#campo-codigo {
+    font-size: 22px;
+    letter-spacing: 0.26em;
+    text-indent: 0.26em;
+    padding: 6px 12px;
+  }
+
+  #lobby-entrada .ou {
+    margin: 8px 0;
+  }
+
+  #lobby-aviso {
+    min-height: 0;
+    margin-top: 7px;
+    font-size: 11px;
+  }
+
+  #lobby-entrada .treino {
+    gap: 7px;
+    margin-top: 9px;
+    padding-top: 9px;
+  }
+
+  #lobby-entrada .botao-jogo {
+    font-size: 13px;
+    padding: 12px 14px;
+  }
+
+  /* O lobby da sala volta a ter DUAS COLUNAS no celular deitado. A regra de `max-width: 900px`
+     do style.css empilha tudo, e empilhado o painel fica com 1128 px de altura numa tela de
+     342 — mais de três telas de rolagem só para chegar no PRONTO. Deitado sobra largura, que é
+     exatamente o que as duas colunas usam. */
+  #lobby.em-sala #lobby-sala {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    padding: 8px 12px 18px;
+    gap: 12px;
+    align-content: start;
+    overflow-y: auto;
+  }
+
+  #lobby-sala .bloco-qr {
+    display: none;
+  }
+
+  /* O nome do jogo e o esquema de TECLAS saem: quem está com o dedo na tela não tem W-A-S-D, e
+     a marca já apareceu na tela de entrada. São ~90 px de rolagem que não informam nada. */
+  #lobby-sala .marca-sala,
+  #lobby-sala .bloco-teclas {
+    display: none;
+  }
+
+  #lobby-sala .bloco-codigo {
+    padding: 8px 12px 10px;
+  }
+
+  #lobby-sala .codigo-sala {
+    font-size: 38px;
+    line-height: 1;
+  }
+
+  #lobby-sala .link-linha span {
+    font-size: 10px;
+  }
+
+  #lobby-cores .cor .apelido {
+    font-size: 7px;
+  }
+
+  #lobby-cores .cor .bicho.grande {
+    width: 24px;
+    height: 24px;
+  }
+
+  #lobby-vagas {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  #lobby-vagas .vaga {
+    padding: 4px 6px;
+  }
+
+  #lobby-sala .bloco-regra {
+    padding: 7px 10px;
+  }
+
+  #lobby-sala .bloco-regra p {
+    font-size: 11px;
+    line-height: 1.35;
+  }
+
+  .botao-jogo.grande {
+    font-size: 16px;
+    padding: 12px 18px;
+  }
+
+  #hud-relogio .timer {
+    font-size: calc(var(--k) * 40px);
+  }
+
+  #contagem .numero {
+    font-size: 96px;
+  }
+
+  #contagem .disco {
+    width: 160px;
+    height: 160px;
+  }
+}
+
+/* Em telas MUITO estreitas deitadas (celular pequeno, 568×320) a marca sai de cena inteira. */
+@media (pointer: coarse) and (max-height: 380px) {
+  #lobby-entrada .marca {
+    display: none;
+  }
+
+  #lobby-entrada .cartao {
+    width: min(520px, 82vw);
+  }
+}

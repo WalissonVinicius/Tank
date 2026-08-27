@@ -14,3 +14,7 @@ _*.png
 .vscode
 .idea
 *.log
+
+# Porte da simulação para Go e o arranjo de paridade cruzada. Nada disso entra na imagem: o
+# servidor de produção continua sendo o Node, e `go/out/` sozinho passa de 100 MB de dumps.
+go

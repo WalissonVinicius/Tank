@@ -1,4 +1,6 @@
 import './style.css';
+// Tudo o que é de CELULAR mora num arquivo próprio, atrás de `body.toque` (M1). Ver toque.css.
+import './toque.css';
 import {
   COUNTDOWN,
   isRoomCode,
@@ -6,6 +8,7 @@ import {
   MAX_BULLETS_BY_PLAYERS,
   normalizeRoomCode,
   PLAYER_COLORS,
+  POWERUP,
   ROOM_CODE_LENGTH,
   ROUNDS,
   ROUND_TIMEOUT,
@@ -17,24 +20,30 @@ import type {
   BulletDeadMsg,
   BulletSpawnMsg,
   GameOverMsg,
+  PowerupExpiredMsg,
+  PowerupTakenMsg,
   RoundEndMsg,
   RoundStartMsg,
   SuddenDeathWallMsg,
   TankDeathMsg,
 } from '@tank/protocol';
-import { makeBot, makeMaze, mulberry32, spawnPoints, step } from '@tank/shared-sim';
-import type { Bot, Input, Maze, SimEvent, SimState, Tank, Vec2 } from '@tank/shared-sim';
+import { CampoDePowerUps, EfeitosDePowerUp, makeBot, makeMaze, mulberry32, spawnPoints, step } from '@tank/shared-sim';
+import type { Bot, Input, ItemDePowerUp, Maze, SimEvent, SimState, Tank, Vec2 } from '@tank/shared-sim';
 
 import { desbloquearAudioNoPrimeiroGesto, setAudioAtivo, tocar } from './audio.js';
 import { criarContagemSonora } from './somDoTempo.js';
 import { createControls } from './input/controls.js';
+import { criarControlesDeToque, ehAparelhoDeToque, type ControlesDeToque } from './input/toque.js';
 import { BulletPredictor } from './net/bullets.js';
 import { NetClient } from './net/client.js';
+import { RelogioDeEfeitos } from './net/efeitos.js';
 import { InterpolationBuffer } from './net/interpolation.js';
 import type { SnapshotTank } from './net/snapshot.js';
 import { prepararEmblemas } from './render/animais.js';
 import { renderCountdown, resetCountdown } from './ui/countdown.js';
 import { iniciarTelaCheia } from './ui/fullscreen.js';
+import { definirModoToque } from './ui/layout.js';
+import { destravarOrientacao, travarPaisagem, vigiarOrientacao } from './ui/orientacao.js';
 import { pushKillfeed, renderHud, resetKillfeed, type HudState } from './ui/hud.js';
 import {
   destaqueAutogol,
@@ -94,6 +103,12 @@ interface Camadas {
   game: HTMLElement;
   /** Menu de pausa (Fase 13 §1) — também por cima, e é ele que segura os cliques quando aberto. */
   pausa: HTMLElement;
+  /** Analógicos virtuais (M1). `null` em quem joga de teclado — a camada nem chega a ser montada. */
+  toque: ControlesDeToque | null;
+  /** Botão de pausa do celular: sem tecla `Esc`, o menu precisava de um alvo de dedo. */
+  botaoPausa: HTMLButtonElement | null;
+  /** `true` enquanto o aviso de virar o aparelho está cobrindo a tela. */
+  emRetrato(): boolean;
 }
 
 /** Quanto tempo o "VAI!" fica na tela depois que a contagem zera — casa com `contagem-vai` no CSS. */
@@ -164,6 +179,10 @@ export interface DebugSnapshot {
    * "para onde o mouse aponta" com "para onde a torre virou" sem refazer a matemática da câmera.
    */
   aim?: number;
+  /** Itens de power-up no chão neste frame (P1) — é por aqui que a prova visual dirige o tanque. */
+  powerups?: { id: number; tipo: string; x: number; y: number; restante: number }[];
+  /** Efeitos ativos no JOGADOR LOCAL, com o relógio de cada um. */
+  efeitos?: { tipo: string; restante: number }[];
 }
 
 function publicarDebug(ativo: boolean, snap: DebugSnapshot): void {
@@ -179,6 +198,10 @@ const SOM_AUTOGOL = [1.4, 0.2, 60, 0.02, 0.2, 0.35, 4, 2.4, -8, 0, 0, 0, 0.08, 0
 const SOM_ESTOURO_BALA = [0.9, 0.05, 160, 0.01, 0.06, 0.12, 4, 1.6, -4, 0, 0, 0, 0.03, 0.4, 0, 0.2, 0, 0.45, 0.06] as const;
 const SOM_BIPE = [0.7, 0, 440, 0.01, 0.05, 0.08, 0, 1.2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.6, 0.02] as const;
 const SOM_VAI = [1, 0, 880, 0.01, 0.09, 0.14, 0, 1.6, 0, 0, 220, 0.04, 0, 0, 0, 0, 0, 0.7, 0.02] as const;
+// P1 — coleta: arpejo curto SUBINDO. Sobe de propósito: é o oposto exato do som do fim do efeito.
+const SOM_POWERUP = [1, 0, 523, 0.01, 0.08, 0.13, 0, 1.7, 0, 0, 392, 0.05, 0, 0, 0, 0, 0, 0.65, 0.02] as const;
+// P1 — fim do efeito: duas notas DESCENDO, curtas e discretas. Precisa ser notado sem assustar.
+const SOM_POWERUP_FIM = [0.7, 0, 392, 0.01, 0.05, 0.1, 0, 1.3, 0, 0, -180, 0.05, 0, 0, 0, 0, 0, 0.5, 0.02] as const;
 
 // Contagem sonora dos últimos 10 s (Fase 10 §4). A regra mora em `somDoTempo.ts`, fora daqui,
 // porque os dois modos precisam dela idêntica e porque assim ela é testável sem navegador.
@@ -277,10 +300,27 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
   const bulletOwners = new Map<string, string>();
   const meId = players[0]!.id;
   const ammoMax = maxBulletsFor(total);
+  // Power-ups (P1). Offline esta aba É o servidor: ela gera a agenda pela seed da rodada, arbitra
+  // quem encostou e roda os relógios — o MESMO código que o `TankRoom` usa online, então o treino
+  // não pode divergir da partida valendo.
+  let campoDePowerups: CampoDePowerUps;
+  const efeitosDePowerup = new EfeitosDePowerUp();
+  /** Itens no chão do tick corrente, copiados uma vez para os bots e para o `RenderView`. */
+  let itensNoChao: ItemDePowerUp[] = [];
+  /**
+   * `?itens=0` desliga o nascimento — a MESMA partida, sem power-up nenhum. Existe para a
+   * comparação A/B de desempenho ser feita no mesmo build, e não contra uma medição antiga de
+   * outro estado do código (o repositório tem vários workers mexendo em paralelo).
+   */
+  const comItens = params.get('itens') !== '0';
 
   const controls = createControls({
     fireTarget: camadas.game,
     screenToWorld: (x, y) => renderer.screenToWorld(x, y),
+    // Analógicos virtuais (M1). Entregues a `createControls` em vez de lidos aqui: as duas
+    // fontes precisam se fundir DENTRO de `read()`, senão o dedo e o mouse escreveriam o mesmo
+    // `Input` em ordens diferentes nos dois modos de jogo.
+    ...(camadas.toque ? { toque: camadas.toque } : {}),
   });
   const debug = params.has('debug');
   desbloquearAudioNoPrimeiroGesto();
@@ -327,6 +367,11 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
 
     state = { tick: 0, maze, tanks, bullets: [], nextBulletId: 0 };
     bulletOwners.clear();
+    // MESMA seed do labirinto — é o que garante, online, que a arena de todo mundo tenha os itens
+    // nos mesmos lugares sem uma mensagem de nascimento sequer.
+    campoDePowerups = new CampoDePowerUps(maze, seed + round - 1);
+    efeitosDePowerup.limpar();
+    itensNoChao = [];
     renderer.setMaze(maze);
     eliminationOrder = [];
     vencedorRodadaId = null;
@@ -370,6 +415,11 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
   window.addEventListener('keydown', (ev) => {
     if (ev.code !== 'Escape') return;
     ev.preventDefault();
+    menuAberto = !menuAberto;
+  });
+  // Celular não tem `Esc`. O botão do canto superior esquerdo é a mesma alavanca, com alvo de
+  // 44 px (M1 §5) — sem ele o menu de pausa (som, controles, sair) ficava inalcançável no dedo.
+  camadas.botaoPausa?.addEventListener('click', () => {
     menuAberto = !menuAberto;
   });
   setPausaHandlers(
@@ -451,6 +501,31 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
     }
   }
 
+  /**
+   * Power-ups do tick (P1), na MESMA ordem do servidor (`TankRoom.atualizarPowerUps`): primeiro o
+   * que acabou, depois o que foi pego. O contrário faria um efeito recém-pego levar um decremento
+   * de `dt` no próprio tick da coleta.
+   */
+  function atualizarPowerUps(dtTick: number): void {
+    if (!comItens) return;
+    for (const fim of efeitosDePowerup.passo(state.tanks, dtTick)) {
+      const tank = state.tanks.get(fim.tankId);
+      // Morte já encerra os efeitos (por regra), e ali a explosão é o evento — um segundo aviso
+      // por cima dela seria ruído.
+      if (!tank?.alive) continue;
+      renderer.onPowerupExpirou(tank.x, tank.y, fim.tipo, fim.tankId === meId);
+      if (fim.tankId === meId) void tocar(SOM_POWERUP_FIM);
+    }
+
+    for (const coleta of campoDePowerups.coletar(state, state.tick)) {
+      const tank = state.tanks.get(coleta.tankId);
+      if (!tank) continue;
+      efeitosDePowerup.aplicar(tank, coleta.tipo);
+      renderer.onPowerupPego(coleta.itemId, coleta.x, coleta.y, coleta.tipo, coleta.tankId === meId);
+      void tocar(SOM_POWERUP);
+    }
+  }
+
   // Mesma regra do servidor (`roundLoop.ts`, decisão confirmada do usuário): a rodada distribui
   // pontos por ordem de eliminação — primeira morte 1 ponto, último vivo `total` — somados aos
   // +1 por abate / −1 por autogol já creditados durante a rodada. Ninguém zera.
@@ -519,6 +594,10 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
           vaiAte = agora + VAI_MS;
         }
       } else if (fase === 'playing') {
+        // Uma leitura do campo por tick: `noChao` devolve um array reaproveitado, e a cópia é
+        // consumida pelos bots aqui e pelo `RenderView` no fim do frame.
+        itensNoChao = comItens ? [...campoDePowerups.noChao(state.tick)] : [];
+
         const inputs = new Map<string, Input>();
         for (const p of players) {
           const tank = state.tanks.get(p.id)!;
@@ -526,7 +605,7 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
           p.aliveSeconds += dt;
           if (p.isBot && p.bot) {
             const target = nearestAliveTarget(tank, state.tanks, state.maze);
-            inputs.set(p.id, p.bot.think(tank, target, state.maze, state.tick, { bullets: state.bullets }));
+            inputs.set(p.id, p.bot.think(tank, target, state.maze, state.tick, { bullets: state.bullets, powerups: itensNoChao }));
           } else if (!p.isBot) {
             const meu = controls.read(tank);
             ultimoAim = meu.aim;
@@ -540,6 +619,7 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
         const events = step(state, inputs, dt);
         state.tick++;
         processarEventos(events, ownerHasBounced);
+        atualizarPowerUps(dt);
 
         roundTimeLeft -= dt;
         const aliveCount = [...state.tanks.values()].filter((t) => t.alive).length;
@@ -574,7 +654,19 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
         color: playersById.get(t.id)!.color,
         alive: t.alive,
         name: playersById.get(t.id)!.name,
+        efeitos: efeitosDePowerup.tiposAtivos(t.id),
       })),
+      // Fora da rodada some tudo, pela mesma razão das balas: o `step()` parou, e um item pairando
+      // durante a tela de fim de rodada mente sobre o estado do jogo.
+      powerups: emJogo
+        ? itensNoChao.map((item) => ({
+            id: item.id,
+            tipo: item.tipo,
+            x: item.x,
+            y: item.y,
+            restante: (item.sumeEmTick - state.tick) / TICK_HZ,
+          }))
+        : [],
       // Fora da rodada o `step()` não roda mais, mas as balas que estavam em voo continuavam em
       // `state.bullets` — e ficavam PARADAS no ar durante a tela de fim de rodada (3 s) ou de fim
       // de partida (15 s). Medido na Fase 6: era isso que fazia a bala parecer viver muito mais do
@@ -606,24 +698,36 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
 
     renderPausa(camadas.pausa, { aberto: menuAberto, modo: 'treino' });
 
+    // Analógicos virtuais (M1): ligados só com a arena em cena e o menu fechado. Desligar SOLTA
+    // os dedos — sem isso o tanque continuaria andando na última direção enquanto o menu (ou o
+    // aviso de virar o aparelho) cobre a tela.
+    camadas.toque?.setAtivo(emJogo && !menuAberto && !camadas.emRetrato());
+    camadas.toque?.desenhar();
+
+
     setAudioAtivo(emJogo && !menuAberto);
     contagemSonora.acompanhar(roundTimeLeft, fase === 'playing');
 
     if (emJogo) {
       const meTank = state.tanks.get(meId)!;
       const meBullets = state.bullets.filter((b) => b.ownerId === meId).length;
+      // O teto de munição SOBE com o power-up (P1) — sem isto o HUD continuaria dizendo "2 de 2"
+      // enquanto a pessoa tem três balas para gastar, e o item mais discreto dos quatro ficaria
+      // invisível justamente no indicador que existe para contá-lo.
+      const meuTeto = ammoMax + (meTank.municao ?? 0);
       const hudState: HudState = {
         round,
         totalRounds: totalRodadas,
         timeLeft: fase === 'countdown' ? countdownLeft : roundTimeLeft,
         vivos: [...state.tanks.values()].filter((t) => t.alive).length,
         meName: playersById.get(meId)!.name,
-        ammoAvailable: meTank.alive ? ammoMax - meBullets : 0,
-        ammoMax,
+        ammoAvailable: meTank.alive ? meuTeto - meBullets : 0,
+        ammoMax: meuTeto,
         meAlive: meTank.alive,
         reconnecting: false,
         emAcao: fase === 'playing',
         treino,
+        efeitos: efeitosDePowerup.ativos(meId),
       };
       renderHud(telas.hud, hudState);
       setTela(telas, 'hud');
@@ -664,6 +768,8 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
       bullets: state.bullets.map((b) => ({ id: b.id, ownerId: b.ownerId, x: b.x, y: b.y })),
       placar: players.map((p) => ({ id: p.id, name: p.name, score: p.score, alive: state.tanks.get(p.id)!.alive })),
       aim: ultimoAim,
+      powerups: view.powerups?.map((i) => ({ id: i.id, tipo: i.tipo, x: i.x, y: i.y, restante: i.restante })),
+      efeitos: efeitosDePowerup.ativos(meId).map((e) => ({ tipo: e.tipo, restante: e.restante })),
     });
 
     requestAnimationFrame(frame);
@@ -750,6 +856,10 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   const controls = createControls({
     fireTarget: camadas.game,
     screenToWorld: (x, y) => renderer.screenToWorld(x, y),
+    // Analógicos virtuais (M1). Entregues a `createControls` em vez de lidos aqui: as duas
+    // fontes precisam se fundir DENTRO de `read()`, senão o dedo e o mouse escreveriam o mesmo
+    // `Input` em ordens diferentes nos dois modos de jogo.
+    ...(camadas.toque ? { toque: camadas.toque } : {}),
   });
   const debug = params.has('debug');
   desbloquearAudioNoPrimeiroGesto();
@@ -799,6 +909,23 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   let maze: Maze | null = null;
   let bulletPredictor: BulletPredictor | null = null;
   const interp = new InterpolationBuffer(INTERP_DELAY_MS);
+
+  // Power-ups (P1). O campo é montado localmente pela seed da rodada — o servidor nunca manda
+  // "nasceu um item". O que ele manda é quem PEGOU e quando ACABOU, e é só isso que entra aqui de
+  // fora: `marcarPego` tira o item do chão e o relógio abaixo cuida do que se vê entre as duas
+  // mensagens. Nada disto toca a bala: o ricochete dela já veio carimbado no `bullet_spawn`.
+  let campoDePowerups: CampoDePowerUps | null = null;
+  const relogioDeEfeitos = new RelogioDeEfeitos();
+  /**
+   * Tick de `avancarBalas` em que a rodada largou. O tick 0 do servidor é o primeiro passo da fase
+   * `playing`, não o do `round_start` (a contagem regressiva não simula nada), então o relógio dos
+   * itens só começa a valer aqui. Infinito enquanto não largou = nenhum item no chão.
+   *
+   * É aproximação, e pode ser: uma diferença de alguns ticks só adianta ou atrasa o instante em
+   * que o item APARECE. A posição e o tipo saem da seed, e quem arbitra a coleta é o servidor.
+   */
+  let ticksDaLargada = Number.POSITIVE_INFINITY;
+  let itensNoChao: readonly ItemDePowerUp[] = [];
 
   let fase: ServerPhase = 'lobby';
   let round = 0;
@@ -885,11 +1012,17 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     if (ticksSimulados < alvoTick) ticksSimulados = alvoTick;
   }
 
-  function trocarLabirinto(novo: Maze): void {
+  function trocarLabirinto(novo: Maze, seed: number): void {
     maze = novo;
     renderer.setMaze(novo);
     if (bulletPredictor) bulletPredictor.setMaze(novo);
     else bulletPredictor = new BulletPredictor(novo);
+    // MESMA seed e MESMO labirinto do servidor: é o que faz o item aparecer no mesmo canto da
+    // arena em todas as telas sem uma mensagem de nascimento.
+    campoDePowerups = new CampoDePowerUps(novo, seed);
+    relogioDeEfeitos.limpar();
+    itensNoChao = [];
+    ticksDaLargada = Number.POSITIVE_INFINITY;
   }
 
   const net = new NetClient({
@@ -902,7 +1035,14 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       prepararEmblemas([...playersById.values()].map((p) => p.color));
       // A largada da rodada é a transição countdown→playing do estado frio: é o mesmo instante em
       // que o servidor liberou o `step()`, então o "VAI!" aparece exatamente quando o jogo começa.
-      if (faseAnterior === 'countdown' && s.phase === 'playing') vaiAte = performance.now() + VAI_MS;
+      if (faseAnterior === 'countdown' && s.phase === 'playing') {
+        vaiAte = performance.now() + VAI_MS;
+        // Largada: é daqui que o relógio dos power-ups conta, porque o tick 0 do servidor é o
+        // primeiro passo de `playing`. `avancarBalas` primeiro, para o marco não nascer atrasado
+        // do catch-up que este mesmo frame ainda vai fazer.
+        avancarBalas(performance.now());
+        ticksDaLargada = ticksSimulados;
+      }
       // Fim da rodada com o relógio quase zerado = o tempo acabou (com alguém vivo a rodada teria
       // terminado bem antes do fim). O servidor zera `timeLeft` no MESMO tick em que troca a
       // fase, então este é o único lugar onde dá para saber que a buzina é devida.
@@ -952,7 +1092,15 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         seedAtual = s.seed;
         // A proporção vem do estado FRIO, não da janela local: é a mesma que o servidor mandou
         // no `round_start` que esta aba perdeu.
-        trocarLabirinto(makeMaze(s.seed, Math.max(2, playersById.size), s.aspect || undefined));
+        trocarLabirinto(makeMaze(s.seed, Math.max(2, playersById.size), s.aspect || undefined), s.seed);
+        // Quem entra com a rodada rolando também perdeu a transição countdown→playing, que é o
+        // marco do relógio dos power-ups. Sem esta estimativa ele passaria a rodada inteira sem
+        // ver um item sequer no chão. `timeLeft` conta para trás desde `ROUND_TIMEOUT`, então o
+        // que já se passou da rodada é a diferença — aproximação boa o bastante para um relógio
+        // que só decide QUANDO desenhar (o servidor continua arbitrando quem pega).
+        if (s.phase === 'playing') {
+          ticksDaLargada = ticksSimulados - Math.max(0, ROUND_TIMEOUT - s.timeLeft) * TICK_HZ;
+        }
       }
     },
     onSnapshot: (tanks: SnapshotTank[]) => {
@@ -1002,7 +1150,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       // MESMA chamada do servidor (mesma seed, mesmo nº de jogadores) — é o que garante que a
       // bala simulada aqui ricocheteie exatamente onde ela ricocheteou lá.
       donosDeBala.clear();
-      trocarLabirinto(makeMaze(msg.seed, msg.playerCount, msg.aspect));
+      trocarLabirinto(makeMaze(msg.seed, msg.playerCount, msg.aspect), msg.seed);
     },
     onRoundEnd: (msg: RoundEndMsg) => {
       // `position` do servidor é ordem de SOBREVIVÊNCIA (maior = morreu por último), não posição
@@ -1030,6 +1178,24 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
           },
         ];
       });
+    },
+    onPowerupTaken: (msg: PowerupTakenMsg) => {
+      // O servidor arbitrou. O item sai do chão AQUI, não quando o meu tanque encosta nele: dois
+      // podem encostar no mesmo tick, e quem decide é lá.
+      campoDePowerups?.marcarPego(msg.itemId);
+      relogioDeEfeitos.aplicar(msg.playerId, msg.tipo, msg.duracao);
+      renderer.onPowerupPego(msg.itemId, msg.x, msg.y, msg.tipo, msg.playerId === net.sessionId);
+      void tocar(SOM_POWERUP);
+    },
+    onPowerupExpired: (msg: PowerupExpiredMsg) => {
+      relogioDeEfeitos.remover(msg.playerId, msg.tipo);
+      // O aviso sai na posição interpolada do tanque — a mesma que está na tela neste instante.
+      const onde = interp.sample(msg.playerId, performance.now());
+      // Sem amostra (ou morto) não há aviso: quem morreu já teve a explosão como evento, e um
+      // segundo sinal por cima dela seria ruído.
+      if (!onde?.alive) return;
+      renderer.onPowerupExpirou(onde.x, onde.y, msg.tipo, msg.playerId === net.sessionId);
+      if (msg.playerId === net.sessionId) void tocar(SOM_POWERUP_FIM);
     },
     onSuddenDeathWall: (msg: SuddenDeathWallMsg) => {
       if (!maze) return;
@@ -1124,6 +1290,10 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     if (ev.code !== 'Escape') return;
     if (!conectado || saindo) return;
     ev.preventDefault();
+    menuAberto = !menuAberto;
+  });
+  camadas.botaoPausa?.addEventListener('click', () => {
+    if (!conectado || saindo) return;
     menuAberto = !menuAberto;
   });
   setPausaHandlers(
@@ -1267,11 +1437,18 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
   // ---------- laço de render (independente da chegada de snapshots) ----------
   let ultimoEnvio = 0;
   let seq = 0;
+  let ultimoFrameOnline = performance.now();
 
   function frame(agora: number): void {
     // A bala roda no MESMO passo fixo do servidor: qualquer outro dt daria uma trajetória de
     // ricochete diferente da autoritativa e as duas telas divergiriam.
     avancarBalas(agora);
+
+    // Relógio dos efeitos: tempo REAL, e não o passo fixo da bala. Ele não decide nada (o
+    // servidor manda `powerup_expired`), só faz a barra do HUD andar junto com o que se vê.
+    const dtReal = Math.min(0.25, (agora - ultimoFrameOnline) / 1000);
+    ultimoFrameOnline = agora;
+    relogioDeEfeitos.passo(dtReal);
 
     const meId = net.sessionId;
     // Mira do frame: precisa da posição do MEU tanque em coordenadas de mundo, que vem do mesmo
@@ -1291,12 +1468,35 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     }
 
     const emJogo = conectado && (fase === 'countdown' || fase === 'playing');
+    // Tick da rodada — o mesmo relógio que o servidor usa para a agenda de itens, deslocado pela
+    // largada. Antes dela `ticksDaLargada` é infinito e a conta dá `-Infinity`: nada no chão.
+    const tickDaRodada = ticksSimulados - ticksDaLargada;
+    itensNoChao = emJogo && campoDePowerups ? campoDePowerups.noChao(tickDaRodada) : [];
     const view: RenderView = {
       tanks: [...playersById.values()].flatMap((p) => {
         const s = interp.sample(p.id, agora);
         if (!s) return [];
-        return [{ id: p.id, x: s.x, y: s.y, angle: s.heading, turret: s.turret, color: p.color, alive: s.alive, name: p.name }];
+        return [
+          {
+            id: p.id,
+            x: s.x,
+            y: s.y,
+            angle: s.heading,
+            turret: s.turret,
+            color: p.color,
+            alive: s.alive,
+            name: p.name,
+            efeitos: relogioDeEfeitos.tiposAtivos(p.id),
+          },
+        ];
       }),
+      powerups: itensNoChao.map((item) => ({
+        id: item.id,
+        tipo: item.tipo,
+        x: item.x,
+        y: item.y,
+        restante: (item.sumeEmTick - tickDaRodada) / TICK_HZ,
+      })),
       // Mesma correção do modo local (Fase 6): fora da rodada o preditor para de avançar, e as
       // balas que sobraram ficavam paradas no ar durante a tela de fim de rodada. Fora de jogo,
       // nenhuma bala vai para a tela.
@@ -1332,6 +1532,13 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
 
     contagemSonora.acompanhar(timeLeft, conectado && fase === 'playing');
     renderPausa(camadas.pausa, { aberto: menuAberto, modo: 'online', roomCode: net.roomId });
+
+    // Analógicos virtuais (M1): ligados só com a arena em cena e o menu fechado. Desligar SOLTA
+    // os dedos — sem isso o tanque continuaria andando na última direção enquanto o menu (ou o
+    // aviso de virar o aparelho) cobre a tela.
+    camadas.toque?.setAtivo(emJogo && !menuAberto && !camadas.emRetrato());
+    camadas.toque?.desenhar();
+
 
     if (!conectado) {
       // A lista de salas só existe enquanto esta tela existe: entrar numa sala desliga o monitor
@@ -1375,8 +1582,11 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     } else if (fase === 'countdown' || fase === 'playing') {
       monitorDeSalas.desligar();
       const me = playersById.get(meId);
-      const ammoMax = maxBulletsFor(playersById.size);
       const minhasBalas = (bulletPredictor?.bullets ?? []).filter((b) => b.ownerId === meId).length;
+      // O teto de munição SOBE com o power-up (P1) — ver a mesma conta no modo local. Aqui ele
+      // sai do relógio local de efeitos, que é o que esta aba sabe sobre o próprio estado.
+      const temMunicaoExtra = relogioDeEfeitos.tiposAtivos(meId).includes('municao');
+      const ammoMax = maxBulletsFor(playersById.size) + (temMunicaoExtra ? POWERUP.municao.valor : 0);
       renderHud(telas.hud, {
         round,
         totalRounds: ROUNDS,
@@ -1388,6 +1598,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
         meAlive: me?.alive ?? false,
         reconnecting,
         emAcao: fase === 'playing',
+        efeitos: relogioDeEfeitos.ativos(meId),
       });
       setTela(telas, 'hud');
     } else if (fase === 'roundend') {
@@ -1428,6 +1639,8 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       bullets: (bulletPredictor?.bullets ?? []).map((b) => ({ id: b.id, ownerId: b.ownerId, x: b.x, y: b.y })),
       placar: [...playersById.values()].map((p) => ({ id: p.id, name: p.name, score: p.score, alive: p.alive })),
       aim: ultimoAim,
+      powerups: view.powerups?.map((i) => ({ id: i.id, tipo: i.tipo, x: i.x, y: i.y, restante: i.restante })),
+      efeitos: relogioDeEfeitos.ativos(meId).map((e) => ({ tipo: e.tipo, restante: e.restante })),
     });
 
     requestAnimationFrame(frame);
@@ -1448,6 +1661,9 @@ async function main(): Promise<void> {
   const contagemEl = document.getElementById('contagem');
   const pausaEl = document.getElementById('pausa');
   const telaCheiaEl = document.getElementById('btn-tela-cheia');
+  const toqueEl = document.getElementById('toque');
+  const gireEl = document.getElementById('gire');
+  const pausaToqueEl = document.getElementById('btn-pausa-toque');
   if (
     !gameEl ||
     !lobbyEl ||
@@ -1456,21 +1672,73 @@ async function main(): Promise<void> {
     !resultEl ||
     !contagemEl ||
     !pausaEl ||
+    !toqueEl ||
+    !gireEl ||
+    !(pausaToqueEl instanceof HTMLButtonElement) ||
     !(telaCheiaEl instanceof HTMLButtonElement)
   ) {
     throw new Error('Estrutura do index.html incompleta.');
   }
 
+  const params = new URLSearchParams(location.search);
+
+  // ---------- CELULAR (M1) ----------
+  // A decisão é tomada AQUI, antes do `Renderer.create`: o modo toque muda o teto de
+  // `devicePixelRatio`, o degrau de pós-processamento e as faixas que a arena cede aos polegares.
+  // Descobrir isso depois do boot obrigaria a refazer o enquadramento com a partida já rodando.
+  const toque = ehAparelhoDeToque(params);
+  definirModoToque(toque);
+  document.body.classList.toggle('toque', toque);
+  const controlesDeToque = toque ? criarControlesDeToque({ camada: toqueEl }) : null;
+
   const telas: Telas = { lobby: lobbyEl, hud: hudEl, roundend: roundendEl, result: resultEl };
-  const camadas: Camadas = { contagem: contagemEl, game: gameEl, pausa: pausaEl };
+  const camadas: Camadas = {
+    contagem: contagemEl,
+    game: gameEl,
+    pausa: pausaEl,
+    toque: controlesDeToque,
+    botaoPausa: toque ? pausaToqueEl : null,
+    emRetrato: () => false,
+  };
 
   const renderer = await Renderer.create(gameEl);
   window.addEventListener('resize', () => renderer.resize());
   // Entrar e sair da tela cheia troca o tamanho da janela em dois passos; `iniciarTelaCheia`
   // chama de volta nos dois, e o `resize()` do Renderer refaz enquadramento e escala do HUD.
-  iniciarTelaCheia(telaCheiaEl, () => renderer.resize());
+  iniciarTelaCheia(telaCheiaEl, () => {
+    renderer.resize();
+    if (!toque) return;
+    // A trava de orientação só é aceita em tela cheia na maioria dos navegadores — este é o
+    // único instante em que ela tem chance de pegar. Sair da tela cheia DESTRAVA: deixar o
+    // aparelho preso em paisagem depois que a pessoa saiu do jogo é sequestrar o celular dela.
+    if (document.fullscreenElement !== null) void travarPaisagem();
+    else destravarOrientacao();
+  });
 
-  const params = new URLSearchParams(location.search);
+  if (toque) {
+    const vigia = vigiarOrientacao({
+      alvo: gireEl,
+      aoMudar: (bloqueado) => {
+        // Voltar para retrato no meio da partida não pode deixar o tanque andando sozinho: os
+        // dedos são soltos junto com o aviso subindo. A partida continua no servidor — quem
+        // virou o aparelho fica parado, exatamente como quem tira a mão do teclado.
+        controlesDeToque?.setAtivo(!bloqueado);
+        renderer.resize();
+      },
+    });
+    camadas.emRetrato = () => vigia.bloqueado;
+
+    // Teclado virtual (M1 §5). Deitado ele come metade da tela, e o campo de nome — que fica no
+    // meio do cartão — some embaixo dele bem na hora de digitar. O navegador só rola sozinho
+    // quando o campo está num container rolável, que é o caso desde o `overflow-y: auto` das
+    // telas no toque; o atraso existe porque a barra do teclado sobe DEPOIS do foco, e rolar
+    // antes disso mira na altura antiga.
+    document.addEventListener('focusin', (ev) => {
+      const alvo = ev.target;
+      if (!(alvo instanceof HTMLInputElement) && !(alvo instanceof HTMLTextAreaElement)) return;
+      window.setTimeout(() => alvo.scrollIntoView({ block: 'center', behavior: 'smooth' }), 280);
+    });
+  }
   if (params.has('local')) {
     await runLocalMode(params, renderer, telas, camadas);
   } else {

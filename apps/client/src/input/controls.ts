@@ -15,6 +15,7 @@
 
 import { direcaoDeMovimento } from '@tank/protocol';
 import type { Input, Vec2 } from '@tank/shared-sim';
+import type { ControlesDeToque } from './toque.js';
 
 const LEFT = new Set(['ArrowLeft', 'KeyA']);
 const RIGHT = new Set(['ArrowRight', 'KeyD']);
@@ -28,6 +29,13 @@ export interface ControlsOptions {
   /** Converte um ponto da tela (px CSS, relativo ao canvas) para coordenadas de mundo. */
   screenToWorld(sx: number, sy: number): Vec2;
   target?: Window;
+  /**
+   * Analógicos virtuais (M1). Quando presente, os eventos de ponteiro com `pointerType === 'touch'`
+   * param de valer como mouse — senão cada toque na tela viraria um TIRO (o `pointerdown` do
+   * canvas) e a mira brigaria com o polegar direito. As duas fontes convivem: quem tem tablet com
+   * teclado usa as duas ao mesmo tempo e a que estiver falando naquele frame ganha.
+   */
+  toque?: ControlesDeToque;
 }
 
 export interface Controls {
@@ -79,7 +87,11 @@ export function createControls(options: ControlsOptions): Controls {
     held.delete(ev.code);
   };
 
+  // Dedo não é mouse: com os analógicos em cena o toque é lido só pelo `toque.ts`.
+  const ehDedo = (ev: PointerEvent): boolean => options.toque !== undefined && ev.pointerType === 'touch';
+
   const onPointerMove = (ev: PointerEvent): void => {
+    if (ehDedo(ev)) return;
     const rect = options.fireTarget.getBoundingClientRect();
     if (!pointer) pointer = { x: 0, y: 0 };
     pointer.x = ev.clientX - rect.left;
@@ -87,7 +99,7 @@ export function createControls(options: ControlsOptions): Controls {
   };
 
   const onPointerDown = (ev: PointerEvent): void => {
-    if (ev.button !== 0) return;
+    if (ev.button !== 0 || ehDedo(ev)) return;
     onPointerMove(ev);
     fireEdge = true;
   };
@@ -112,7 +124,7 @@ export function createControls(options: ControlsOptions): Controls {
         else if (DOWN.has(code)) down = true;
       }
 
-      const mover = direcaoDeMovimento(up, down, left, right);
+      const teclado = direcaoDeMovimento(up, down, left, right);
 
       if (pointer && myPos) {
         const alvo = options.screenToWorld(pointer.x, pointer.y);
@@ -122,10 +134,26 @@ export function createControls(options: ControlsOptions): Controls {
         if (dx * dx + dy * dy > 4) ultimoAim = Math.atan2(dy, dx);
       }
 
-      const fire = fireEdge;
+      let fire = fireEdge;
       fireEdge = false;
+      let mover = teclado;
+      let aim = ultimoAim;
 
-      return { mover, fire, aim: ultimoAim };
+      // O toque só ATROPELA o teclado no que ele está de fato dizendo neste frame: polegar
+      // esquerdo fora da zona morta manda no `mover`, polegar direito que já apontou manda no
+      // `aim`, soltura manda no `fire`. Fora disso, o teclado continua valendo — é o que faz
+      // tablet com teclado (e celular espelhado) funcionar sem uma fonte anular a outra.
+      if (options.toque) {
+        const t = options.toque.ler();
+        if (t.mover !== null) mover = t.mover;
+        if (t.fire) fire = true;
+        // Dedo apontando toma a mira do cursor (e apaga a mira de tela, que não existe no
+        // celular). O cursor a retoma sozinho no primeiro `pointermove` de mouse de verdade.
+        if (t.apontando) pointer = null;
+        if (t.aim !== undefined && pointer === null) aim = t.aim;
+      }
+
+      return { mover, fire, aim };
     },
     get pointer(): Readonly<Vec2> | null {
       return pointer;

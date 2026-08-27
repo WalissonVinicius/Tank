@@ -34,6 +34,10 @@ export class BulletPredictor {
       vy: msg.vy,
       bounces: 0,
       age: 0,
+      // P1, pelo MESMO motivo do vetor acima: o bônus de ricochete vem CARIMBADO na mensagem, e
+      // não do estado do atirador. Consultar o dono aqui faria a bala trocar de regra no meio do
+      // voo quando o power-up dele expirasse — e trocar em instantes diferentes em cada tela.
+      ricochete: msg.ricochete,
     };
     this.state.bullets.push(bullet);
   }

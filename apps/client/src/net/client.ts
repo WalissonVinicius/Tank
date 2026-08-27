@@ -11,6 +11,8 @@ import type {
   BulletSpawnMsg,
   GameOverMsg,
   RoundEndMsg,
+  PowerupExpiredMsg,
+  PowerupTakenMsg,
   RoundStartMsg,
   SuddenDeathWallMsg,
   TankDeathMsg,
@@ -119,6 +121,8 @@ export interface NetHandlers {
   onRoundStart(msg: RoundStartMsg): void;
   onRoundEnd(msg: RoundEndMsg): void;
   onSuddenDeathWall(msg: SuddenDeathWallMsg): void;
+  onPowerupTaken(msg: PowerupTakenMsg): void;
+  onPowerupExpired(msg: PowerupExpiredMsg): void;
   onGameOver(msg: GameOverMsg): void;
   onReconnecting(): void;
   onReconnected(): void;
@@ -322,6 +326,8 @@ export class NetClient {
     room.onMessage(MessageType.RoundStart, (msg: RoundStartMsg) => this.handlers.onRoundStart(msg));
     room.onMessage(MessageType.RoundEnd, (msg: RoundEndMsg) => this.handlers.onRoundEnd(msg));
     room.onMessage(MessageType.SuddenDeathWall, (msg: SuddenDeathWallMsg) => this.handlers.onSuddenDeathWall(msg));
+    room.onMessage(MessageType.PowerupTaken, (msg: PowerupTakenMsg) => this.handlers.onPowerupTaken(msg));
+    room.onMessage(MessageType.PowerupExpired, (msg: PowerupExpiredMsg) => this.handlers.onPowerupExpired(msg));
     room.onMessage(MessageType.GameOver, (msg: GameOverMsg) => this.handlers.onGameOver(msg));
 
     room.onLeave((code: number) => {

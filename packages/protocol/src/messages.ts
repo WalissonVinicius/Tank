@@ -1,5 +1,7 @@
 // Tipos das mensagens cliente↔servidor (relatório G §4.1–4.2).
 
+import type { TipoPowerUp } from './powerups.js';
+
 // Nomes de mensagem — usados como `type`/canal ao trocar via Colyseus ou WebSocket cru.
 // FONTE DA VERDADE do nome do canal: servidor e cliente importam daqui, nunca escrevem a
 // string à mão (foi assim que o canal do snapshot quase divergiu entre as duas pontas).
@@ -19,6 +21,8 @@ export const MessageType = {
   RoundStart: 'round_start',
   RoundEnd: 'round_end',
   SuddenDeathWall: 'sudden_death_wall',
+  PowerupTaken: 'powerup_taken',
+  PowerupExpired: 'powerup_expired',
   GameOver: 'game_over',
 } as const;
 
@@ -218,7 +222,45 @@ export interface BulletSpawnMsg {
   /** Velocidade em px/s. E ISTO que define a trajetoria. */
   vx: number;
   vy: number;
+  /**
+   * Rebotes EXTRAS desta bala, acima de `MAX_BOUNCES` — o carimbo do power-up de ricochete que o
+   * atirador tinha NO INSTANTE do disparo. 0 quando ele não tinha nenhum.
+   *
+   * Está aqui pelo MESMO motivo que `vx`/`vy`: é física de bala, e a bala é simulada localmente
+   * em cada cliente. Se o cliente lesse o efeito do estado do atirador, uma bala disparada com
+   * ricochete duplo passaria a quicar só uma vez no instante em que o efeito expirasse no dono —
+   * ela sumiria na parede aqui e continuaria voando lá, e alguém morreria de uma bala que a
+   * própria tela mostrou desaparecendo. Viajando por bala, o efeito acompanha o projétil até o
+   * fim do voo, mesmo depois de acabar para quem atirou.
+   */
+  ricochete: number;
   /** Tick de simulacao do servidor em que o disparo ocorreu. */
+  tick: number;
+}
+
+/**
+ * Alguém PEGOU um item do chão. Quem arbitra é sempre o SERVIDOR, como na morte: dois tanques
+ * podem encostar no mesmo item no mesmo tick, e nenhum cliente pode decidir isso sozinho.
+ *
+ * O NASCIMENTO do item não tem mensagem — ele sai do RNG semeado da rodada (`agendaDePowerUps`),
+ * então todo cliente já sabe onde e quando cada item aparece sem gastar um byte de rede.
+ */
+export interface PowerupTakenMsg {
+  /** Índice do item na agenda da rodada — é por ele que o cliente tira o item do chão. */
+  itemId: number;
+  tipo: TipoPowerUp;
+  playerId: string;
+  x: number;
+  y: number;
+  /** Duração do efeito em segundos, para o HUD montar o contador sem consultar a tabela. */
+  duracao: number;
+  tick: number;
+}
+
+/** O efeito acabou (relógio zerou ou o tanque morreu). O cliente apaga o crachá e o contador. */
+export interface PowerupExpiredMsg {
+  playerId: string;
+  tipo: TipoPowerUp;
   tick: number;
 }
 

@@ -27,6 +27,29 @@ export interface Tank {
   turret: number; // rad — direção da torre, gira até `Input.aim` a TURRET_RATE; a BALA sai daqui
   alive: boolean;
   fireCooldownLeft: number; // segundos até poder atirar de novo
+
+  // -------------------------------------------------------------------------------------------
+  // POWER-UPS (P1) — quatro bônus ADITIVOS, todos com "sem efeito" no valor ZERO.
+  //
+  // São opcionais só por compatibilidade com quem monta `Tank` sem eles; a semântica é a de um
+  // campo obrigatório cujo zero-value é o padrão do jogo, e é assim que o porte para Go deve
+  // escrevê-los (`float64`/`int` comuns, sem ponteiro). Nenhuma regra do jogo lê "tem power-up?":
+  // cada linha da simulação soma o bônus ao valor de tuning e segue.
+  //
+  // Quem LIGA e DESLIGA estes campos é `EfeitosDePowerUp` (powerups.ts) — a simulação só os lê.
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Rebotes EXTRAS que as balas disparadas A PARTIR DE AGORA recebem. Não afeta bala já em voo:
+   * o número é COPIADO para `Bullet.ricochete` no instante do disparo, e é a cópia que manda.
+   */
+  ricochete?: number;
+  /** Balas simultâneas EXTRAS, somadas ao teto de `MAX_BULLETS_BY_PLAYERS`. */
+  municao?: number;
+  /** Fração do cooldown de tiro descontada. 0,5 = recarrega na metade do tempo. */
+  recarga?: number;
+  /** Fração EXTRA de velocidade de deslocamento. 0,35 = +35%. */
+  turbo?: number;
 }
 
 export interface Bullet {
@@ -38,6 +61,16 @@ export interface Bullet {
   vy: number;
   bounces: number;
   age: number; // segundos desde o disparo
+  /**
+   * Rebotes EXTRAS DESTA bala, acima de `MAX_BOUNCES`, carimbados no disparo a partir de
+   * `Tank.ricochete` (P1). 0 = bala comum.
+   *
+   * O carimbo é o ponto inteiro do desenho. A bala não trafega pela rede: cada cliente simula a
+   * trajetória localmente, e o valor viaja junto dela em `BulletSpawnMsg.ricochete`. Ler o efeito
+   * do atirador na hora de simular faria a bala trocar de regra no meio do voo, no instante em
+   * que o power-up expirasse no dono — e trocaria em instantes diferentes em cada tela.
+   */
+  ricochete?: number;
 }
 
 export interface SimState {
@@ -96,6 +129,8 @@ export type SimEvent =
       angle: number;
       vx: number;
       vy: number;
+      /** Rebotes extras carimbados nesta bala (P1). O servidor repassa em `BulletSpawnMsg`. */
+      ricochete: number;
       tick: number;
     }
   | { type: 'bounce'; bulletId: string; x: number; y: number; normal: Vec2; tick: number }

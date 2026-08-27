@@ -8,6 +8,7 @@ import {
   MAZE_ASPECT_MIN,
   MessageType,
   PLAYER_COLORS,
+  POWERUP,
   ROUNDS,
   ROUND_TIMEOUT,
   SNAPSHOT_HZ,
@@ -18,6 +19,8 @@ import {
 import type { ConfigMsg, InputBitsMsg, PickColorMsg, ReadyMsg, SalaMetadata, ViewportMsg } from '@tank/protocol';
 import {
   BOT_DIFFICULTY,
+  CampoDePowerUps,
+  EfeitosDePowerUp,
   makeBot,
   makeMaze,
   mulberry32,
@@ -123,6 +126,12 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
 
   private suddenDeath = { active: false, timer: 0, attempts: 0 };
   private snapshotAccum = 0;
+
+  // Power-ups (P1). O CAMPO é regerado a cada rodada a partir da seed — o cliente monta um igual
+  // sozinho e por isso o nascimento não gasta rede. Os EFEITOS são o único lugar do servidor que
+  // liga e desliga os bônus no `Tank`; quem PEGOU sai daqui e vira broadcast, como a morte.
+  private powerups: CampoDePowerUps | null = null;
+  private readonly efeitos = new EfeitosDePowerUp();
 
   private matchId = '';
   private startedAt = 0;
@@ -579,6 +588,10 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     });
 
     this.sim = { tick: 0, maze, tanks, bullets: [], nextBulletId: 0 };
+    // Mesma seed do labirinto: o cliente monta esta agenda sozinho no `round_start` e chega aos
+    // mesmos itens, nos mesmos lugares, nos mesmos ticks — sem uma mensagem de nascimento.
+    this.powerups = new CampoDePowerUps(maze, seed);
+    this.efeitos.limpar();
     this.eliminationOrder = [];
     this.deathLog = [];
     this.suddenDeath = { active: false, timer: 0, attempts: 0 };
@@ -644,6 +657,7 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     const bulletIdsAfter = new Set(this.sim.bullets.map((b) => b.id));
 
     this.handleSimEvents(events, bulletIdsBefore, bulletIdsAfter);
+    this.atualizarPowerUps(dt);
 
     this.sim.tanks.forEach((tank) => {
       if (tank.alive) this.statsFor(tank.id).aliveSeconds += dt;
@@ -684,6 +698,42 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     this.maybeSendSnapshot(dt);
   }
 
+  /**
+   * Power-ups do tick (P1): primeiro o que ACABOU, depois o que foi PEGO.
+   *
+   * Nessa ordem porque o contrário deixaria um efeito recém-pego levar um decremento de `dt` no
+   * mesmo tick da coleta — e, no caso de uma renovação, poderia até expirá-lo na hora.
+   *
+   * O nascimento não aparece aqui: ele já está na agenda determinística que o cliente também tem.
+   * Só a COLETA e a EXPIRAÇÃO viram mensagem, porque só elas são decisão do servidor.
+   */
+  private atualizarPowerUps(dt: number): void {
+    if (!this.sim || !this.powerups) return;
+
+    for (const fim of this.efeitos.passo(this.sim.tanks, dt)) {
+      this.broadcast(MessageType.PowerupExpired, {
+        playerId: fim.tankId,
+        tipo: fim.tipo,
+        tick: this.sim.tick,
+      });
+    }
+
+    for (const coleta of this.powerups.coletar(this.sim, this.sim.tick)) {
+      const tank = this.sim.tanks.get(coleta.tankId);
+      if (!tank) continue;
+      this.efeitos.aplicar(tank, coleta.tipo);
+      this.broadcast(MessageType.PowerupTaken, {
+        itemId: coleta.itemId,
+        tipo: coleta.tipo,
+        playerId: coleta.tankId,
+        x: coleta.x,
+        y: coleta.y,
+        duracao: POWERUP[coleta.tipo].duracao,
+        tick: this.sim.tick,
+      });
+    }
+  }
+
   private maybeSendSnapshot(dt: number): void {
     this.snapshotAccum += dt;
     const snapshotInterval = 1 / SNAPSHOT_HZ;
@@ -711,11 +761,15 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     const inputs = new Map<string, Input>();
     if (!this.sim) return inputs;
 
+    // Uma leitura do campo por tick, copiada: `noChao` devolve um array reaproveitado, e todos os
+    // bots da sala consultam a mesma lista dentro deste laço.
+    const itens = this.powerups ? [...this.powerups.noChao(this.sim.tick)] : [];
+
     for (const tank of this.sim.tanks.values()) {
       if (!tank.alive) continue;
       const player = this.state.players.get(tank.id);
       if (player?.isBot) {
-        inputs.set(tank.id, this.computeBotInput(tank));
+        inputs.set(tank.id, this.computeBotInput(tank, itens));
       } else {
         inputs.set(tank.id, this.lastInput.get(tank.id) ?? EMPTY_INPUT);
       }
@@ -723,7 +777,7 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     return inputs;
   }
 
-  private computeBotInput(tank: Tank): Input {
+  private computeBotInput(tank: Tank, powerups: readonly Vec2[]): Input {
     if (!this.sim) return EMPTY_INPUT;
     const target = this.nearestEnemy(tank.id);
     if (!target) return EMPTY_INPUT;
@@ -731,7 +785,7 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     const brain = this.botBrains.get(tank.id);
     if (!brain) return EMPTY_INPUT;
 
-    return brain.think(tank, target, this.sim.maze, this.sim.tick, { bullets: this.sim.bullets });
+    return brain.think(tank, target, this.sim.maze, this.sim.tick, { bullets: this.sim.bullets, powerups });
   }
 
   private nearestEnemy(selfId: string): Vec2 | undefined {
@@ -768,6 +822,9 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
           angle: event.angle,
           vx: event.vx,
           vy: event.vy,
+          // P1: o bônus de ricochete viaja COM a bala, como `vx`/`vy` — nunca é lido do estado do
+          // atirador do outro lado. Ver `BulletSpawnMsg.ricochete`.
+          ricochete: event.ricochete,
           tick: event.tick,
         });
       } else if (event.type === 'bullet_expired') {
@@ -903,6 +960,8 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
     this.state.timeLeft = 0;
     this.state.phase = 'lobby';
     this.sim = null;
+    this.powerups = null;
+    this.efeitos.limpar();
     this.botBrains.clear();
     this.publicarSala();
     this.broadcast(MessageType.Rematch, undefined);

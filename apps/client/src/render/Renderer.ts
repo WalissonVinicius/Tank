@@ -3,13 +3,13 @@
 // internamente o Renderer roda seu próprio ticker para efeitos contínuos (partículas, luzes,
 // screen shake, pós-processamento) que não dependem do ritmo da simulação.
 
-import { Application, BitmapText, Container, Graphics, Sprite, Texture } from 'pixi.js';
+import { Application, BitmapText, Container, Graphics, Rectangle, Sprite, Texture } from 'pixi.js';
 import type { Filter } from 'pixi.js';
 import { raycastSegment } from '@tank/shared-sim';
 import type { Aabb, Maze, Vec2 } from '@tank/shared-sim';
-import { BULLET_RADIUS, COUNTDOWN, TANK_RADIUS, WORLD_COLORS } from '@tank/protocol';
+import { BULLET_RADIUS, COUNTDOWN, POWERUP, TANK_RADIUS, WORLD_COLORS, type TipoPowerUp } from '@tank/protocol';
 
-import { aplicarEscalaHud, aspectoDaArena, reservasDoJogo, type Reservas } from '../ui/layout.js';
+import { aplicarEscalaHud, aspectoDaArena, emModoToque, reservasDoJogo, type Reservas } from '../ui/layout.js';
 import { createTextures, type GameTextures } from './textures.js';
 import { lighten } from './color.js';
 import { MazeView } from './maze.js';
@@ -20,6 +20,7 @@ import { DecalLayer } from './decals.js';
 import { ParticleSystem } from './particles.js';
 import { JuiceController } from './juice.js';
 import { PostFX, qualidadePara, type NivelFx } from './post.js';
+import { CrachaDeEfeitos, PowerUpFieldView, type ItemVisivel } from './powerups.js';
 
 export interface RenderTank {
   id: string;
@@ -30,6 +31,8 @@ export interface RenderTank {
   color: number;
   alive: boolean;
   name: string;
+  /** Power-ups ativos neste tanque (P1) — viram o crachá logo abaixo dele. Ausente = nenhum. */
+  efeitos?: readonly TipoPowerUp[];
 }
 
 export interface RenderBullet {
@@ -42,6 +45,8 @@ export interface RenderBullet {
 export interface RenderView {
   tanks: RenderTank[];
   bullets: RenderBullet[];
+  /** Itens de power-up no chão agora (P1). Ausente = nenhum, e a camada se esvazia sozinha. */
+  powerups?: readonly ItemVisivel[];
   me: string;
 }
 
@@ -61,6 +66,9 @@ const TRACK_STEP_PX = 12;
 const TRACK_TELEPORT_DIST = 30;
 const RECOIL_MATCH_RADIUS = 40;
 
+/** Lista vazia reaproveitada — evita alocar um array por frame quando não há item no chão. */
+const SEM_POWERUPS: readonly ItemVisivel[] = [];
+
 const WARM_SPARK_COLORS = [0xffb347, 0xfff1d6, 0xffd84d];
 const FIRE_COLORS = [0xffb347, 0xff6a2a, 0xffd84d, 0xff3b3b];
 
@@ -70,6 +78,25 @@ const FIRE_COLORS = [0xffb347, 0xff6a2a, 0xffd84d, 0xff3b3b];
  * (§2, item c) caso a meta de p95 não seja batida.
  */
 const DPR_MAX = 2;
+/**
+ * Teto do `devicePixelRatio` no CELULAR (M1 §4).
+ *
+ * Aparelho de toque chega com `devicePixelRatio` de 2,5 a 3,5. Um 2340×1080 renderizaria em mais
+ * pixels que um monitor 1440p — num GPU que é uma fração do Iris Xe em que o pós-processamento
+ * foi calibrado. E a tela tem 6 polegadas: ninguém vê a diferença entre 1,5 e 3. É a alavanca
+ * mais barata que existe aqui, e é a primeira a ser puxada.
+ */
+const DPR_MAX_TOQUE = 1.5;
+
+/** Teto de resolução do frame — o do celular é bem mais baixo (ver `DPR_MAX_TOQUE`). */
+function tetoDeDpr(): number {
+  // `?dpr=N` destrava o teto — existe pela mesma razão do `?fx=`: para MEDIR o degrau. Sem ele
+  // não dá para provar quanto o limite de densidade de pixels economiza no celular, porque o
+  // aparelho não deixa escolher o próprio `devicePixelRatio`.
+  const forcado = Number(new URLSearchParams(location.search).get('dpr'));
+  if (Number.isFinite(forcado) && forcado > 0) return forcado;
+  return emModoToque() ? DPR_MAX_TOQUE : DPR_MAX;
+}
 
 // ---------------------------------------------------------------------------------------------
 // ACHE O SEU TANQUE (Fase 11): tudo o que acontece DURANTE a contagem regressiva para cada um
@@ -304,6 +331,10 @@ export class Renderer {
 
   private readonly tanks = new Map<string, TankView>();
   private readonly runtime = new Map<string, TankRuntimeState>();
+  /** Itens no chão (P1). Atribuído no construtor: inicializador de campo não enxerga `textures`. */
+  private readonly powerupField: PowerUpFieldView;
+  /** Um crachá de efeitos por tanque, criado junto da `TankView` e vivendo na camada de nomes. */
+  private readonly crachas = new Map<string, CrachaDeEfeitos>();
 
   private currentMaze: Maze | null = null;
   private worldWidth = 1;
@@ -317,7 +348,7 @@ export class Renderer {
   private filtrosAplicados: Filter[] | null = null;
   /** Faixas de tela ocupadas pelo HUD (relógio em cima, munição embaixo). Ver ui/layout.ts. */
   private reservas: Reservas = { top: 0, right: 0, bottom: 0, left: 0 };
-  /** `?fx=alto|reduzido` trava o nível de pós-processamento — existe para MEDIR cada degrau. */
+  /** `?fx=alto|reduzido|minimo` trava o nível de pós-processamento — existe para MEDIR cada degrau. */
   private nivelForcado: NivelFx | null = null;
 
   /** Segundos restantes da contagem regressiva; `null` fora dela. Ver `setLargada()`. */
@@ -410,6 +441,7 @@ export class Renderer {
     this.lights = new LightFx(textures);
     this.particles = new ParticleSystem(textures);
     this.bullets = new BulletPool(textures);
+    this.powerupField = new PowerUpFieldView(textures);
 
     // ordem das camadas: chão → decalques → sombras → paredes → entidades → fx/partículas → luz → nomes
     this.world.addChild(this.mazeView.floorLayer);
@@ -442,6 +474,9 @@ export class Renderer {
     this.world.addChild(this.mascaraParedes);
     this.montarLinhaDeMira();
     this.world.addChild(this.miraLayer);
+    // Itens de power-up (P1) logo abaixo dos tanques: um tanque passando por cima do item tapa o
+    // item, e não o contrário — quem mata continua sendo o primeiro plano.
+    this.world.addChild(this.powerupField.container);
     this.world.addChild(this.entitiesLayer);
     this.fxLayer.addChild(this.particles.smokeContainer, this.particles.container, this.bullets.container);
     this.world.addChild(this.fxLayer);
@@ -457,7 +492,7 @@ export class Renderer {
     this.montarEtiquetasDeAutogol();
     this.world.addChild(this.labelLayer);
 
-    this.world.filterArea = app.screen;
+    this.atualizarAreaDosFiltros();
     this.world.filters = this.post.filters;
 
     this.drawCrosshair();
@@ -751,7 +786,7 @@ export class Renderer {
     const app = new Application();
     await app.init({
       antialias: true,
-      resolution: Math.min(window.devicePixelRatio || 1, DPR_MAX),
+      resolution: Math.min(window.devicePixelRatio || 1, tetoDeDpr()),
       autoDensity: true,
       background: WORLD_COLORS.background,
       preference: ['webgl'],
@@ -764,7 +799,7 @@ export class Renderer {
     const textures = createTextures(app.renderer);
     const renderer = new Renderer(app, textures);
     const fx = new URLSearchParams(location.search).get('fx');
-    if (fx === 'alto' || fx === 'reduzido') renderer.nivelForcado = fx;
+    if (fx === 'alto' || fx === 'reduzido' || fx === 'minimo') renderer.nivelForcado = fx;
     renderer.resize();
     // Compila os shaders dos filtros de morte agora, na tela de entrada, e não no primeiro
     // abate — ver `PostFX.prewarm()`.
@@ -782,6 +817,8 @@ export class Renderer {
     this.worldHeight = maze.rows * maze.cell;
 
     this.mazeView.setMaze(maze);
+    // Labirinto novo = mundo de outro tamanho; a área dos filtros é medida em unidades de mundo.
+    this.atualizarAreaDosFiltros();
     this.shadowMask.clear().rect(0, 0, this.worldWidth, this.worldHeight).fill(0xffffff);
     // Geometria da linha de mira, montada uma vez por labirinto (ver `atualizarLinhaDeMira`).
     // A diagonal é o comprimento máximo do raio: dentro da borda do labirinto ela sempre alcança
@@ -801,6 +838,8 @@ export class Renderer {
     this.fitCamera();
     this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
     this.particles.setWorldBounds(this.worldWidth, this.worldHeight);
+    // Rodada nova zera os itens: a agenda do labirinto anterior não sobrevive à virada.
+    if (outroLabirinto) this.powerupField.limpar();
     if (outroLabirinto) this.iniciarMontagem(maze);
     // A rodada nova devolve a cor: mesmo que o `sync()` da partida anterior tenha deixado o mundo
     // cinza, o labirinto novo já começa colorido (ver V2 §3).
@@ -838,9 +877,14 @@ export class Renderer {
         this.entitiesLayer.addChild(tankView.root);
         this.shadowsLayer.addChild(tankView.shadow);
         this.labelLayer.addChild(tankView.label);
+        const cracha = new CrachaDeEfeitos();
+        this.crachas.set(t.id, cracha);
+        this.labelLayer.addChild(cracha.root);
         rt = { odometer: 0, lastX: t.x, lastY: t.y, wasAlive: t.alive };
         this.runtime.set(t.id, rt);
       }
+      // Crachá de power-up (P1): só de tanque VIVO — morto não ameaça ninguém.
+      this.crachas.get(t.id)?.sync(t.efeitos ?? [], t.x, t.y, t.alive);
 
       if (rt.wasAlive && !t.alive) {
         tankView.startDeathSequence();
@@ -871,9 +915,12 @@ export class Renderer {
       tankView.destroy();
       this.tanks.delete(id);
       this.runtime.delete(id);
+      this.crachas.get(id)?.destroy();
+      this.crachas.delete(id);
     }
 
     this.bullets.sync(view.bullets);
+    this.powerupField.sync(view.powerups ?? SEM_POWERUPS);
     this.atualizarLinhaDeMira();
 
     // V2 §3: o mundo perde a cor enquanto EU estou eliminado e a rodada continua sem mim. Exigir
@@ -938,6 +985,53 @@ export class Renderer {
       );
     }
     this.juice.addTrauma(0.025);
+  }
+
+  /**
+   * Alguém PEGOU um item (P1). `souEu` só muda a intensidade — o evento pertence à sala, e quem
+   * está do outro lado da arena precisa ver que aquele tanque acabou de ficar mais perigoso.
+   *
+   * Sem cratera e sem onda de choque: isto não é um abate. O vocabulário aqui é o de energia
+   * subindo (faíscas para FORA e um clarão curto), não o de coisa se rompendo.
+   */
+  onPowerupPego(itemId: number, x: number, y: number, tipo: TipoPowerUp, souEu: boolean): void {
+    this.powerupField.pegar(itemId);
+    const cor = POWERUP[tipo].cor;
+
+    this.lights.flash(x, y, souEu ? 130 : 96, cor, 200, souEu ? 0.7 : 0.5);
+    this.particles.spawn(x, y, 0, 0, 0.22, 1.1, cor, { drag: 0, grow: 3.4, alpha: 0.38 });
+
+    // Faíscas subindo em coroa, não espalhadas: coleta é ganho, e ganho sobe.
+    const faiscas = souEu ? 20 : 13;
+    for (let i = 0; i < faiscas; i++) {
+      const a = (i / faiscas) * Math.PI * 2 + Math.random() * 0.3;
+      const speed = 60 + Math.random() * 110;
+      this.particles.spawn(x, y, Math.cos(a) * speed, Math.sin(a) * speed - 40, 0.3 + Math.random() * 0.3, 0.16, cor, {
+        drag: 3.4,
+        gravity: -30,
+      });
+    }
+    this.juice.addTrauma(souEu ? 0.14 : 0.05);
+  }
+
+  /**
+   * O efeito ACABOU (P1). Existe porque "senão a pessoa continua jogando como se tivesse": um
+   * anel que se fecha para dentro do tanque, na cor do efeito, mais um sopro de faíscas caindo.
+   * É a leitura inversa da coleta — energia saindo em vez de entrando.
+   */
+  onPowerupExpirou(x: number, y: number, tipo: TipoPowerUp, souEu: boolean): void {
+    const cor = POWERUP[tipo].cor;
+    this.lights.flash(x, y, 70, cor, 150, souEu ? 0.42 : 0.26);
+    for (let i = 0; i < (souEu ? 12 : 7); i++) {
+      const a = (i / 9) * Math.PI * 2;
+      // Nasce no anel e cai para dentro: o vetor aponta para o centro, ao contrário da coleta.
+      const r = 34;
+      this.particles.spawn(x + Math.cos(a) * r, y + Math.sin(a) * r, -Math.cos(a) * 55, -Math.sin(a) * 55, 0.3, 0.12, cor, {
+        drag: 4,
+        gravity: 90,
+      });
+    }
+    if (souEu) this.juice.addTrauma(0.05);
   }
 
   /**
@@ -1047,26 +1141,53 @@ export class Renderer {
   resize(): void {
     // Mudar de monitor (ou de nível de zoom) troca o devicePixelRatio; sem isto o jogo continuaria
     // rasterizando na densidade do monitor anterior — borrado num, desperdiçando pixels no outro.
-    const dprAlvo = Math.min(window.devicePixelRatio || 1, DPR_MAX);
+    const dprAlvo = Math.min(window.devicePixelRatio || 1, tetoDeDpr());
     if (Math.abs(this.app.renderer.resolution - dprAlvo) > 0.01) {
       this.app.renderer.resolution = dprAlvo;
       this.app.resize();
     }
     aplicarEscalaHud(this.app.screen.height);
-    this.reservas = reservasDoJogo(this.app.screen.height);
+    this.reservas = reservasDoJogo(this.app.screen.height, this.app.screen.width);
     // O que pesa nos filtros são os pixels REAIS do framebuffer: px CSS × resolução, ao quadrado.
     const res = this.app.renderer.resolution;
     const megapixels = (this.app.screen.width * res * this.app.screen.height * res) / 1e6;
-    const auto = qualidadePara(megapixels);
+    const auto = qualidadePara(megapixels, emModoToque());
     this.post.aplicarQualidade(
       this.nivelForcado === 'alto'
         ? { nivel: 'alto', resolucao: 1 }
-        : this.nivelForcado === 'reduzido'
-          ? { nivel: 'reduzido', resolucao: auto.resolucao }
+        : this.nivelForcado !== null
+          ? { nivel: this.nivelForcado, resolucao: auto.resolucao }
           : auto,
     );
     this.fitCamera();
-    this.world.filterArea = this.app.screen;
+    this.atualizarAreaDosFiltros();
+  }
+
+  /**
+   * Área que a cadeia de pós-processamento cobre.
+   *
+   * ATENÇÃO ao espaço de coordenadas: no Pixi v8 o `filterArea` é lido no espaço LOCAL do
+   * container filtrado e só depois multiplicado pela `worldTransform`
+   * (`FilterSystem._calculateFilterArea`). Aqui morava `world.filterArea = app.screen`, que
+   * escrevia um retângulo em PIXELS DE TELA num container medido em UNIDADES DE MUNDO — ou seja,
+   * o mundo era recortado em `(0,0,larguraDaTela,alturaDaTela)` de mundo.
+   *
+   * No desktop isso nunca apareceu porque o labirinto (≈1176×588) sempre coube dentro da janela
+   * (1280×720 e acima). No celular deitado (750×342 contra um labirinto de 756×420) o corte é
+   * imediato: a arena aparecia com o terço de baixo faltando, borda reta e tudo. Medido na M1.
+   *
+   * O certo é o retângulo do MUNDO, com uma folga de uma célula para o halo do bloom e a onda de
+   * choque não serem cortados na borda do labirinto. Não custa desempenho: o próprio Pixi já
+   * limita esses limites ao viewport depois (`_calculateFilterBounds`, `clipToViewport`).
+   */
+  private atualizarAreaDosFiltros(): void {
+    const folga = this.currentMaze?.cell ?? 84;
+    this.world.filterArea = new Rectangle(
+      -folga,
+      -folga,
+      this.worldWidth + folga * 2,
+      this.worldHeight + folga * 2,
+    );
   }
 
   // A arena ocupa a área JOGÁVEL — a janela menos as faixas reservadas ao HUD — com escala
@@ -1093,6 +1214,29 @@ export class Renderer {
     this.camScale = this.baseScale;
     this.camPivotX = this.worldWidth / 2;
     this.camPivotY = this.worldHeight / 2;
+    this.publicarCamera(screenW, screenH, playW, playH);
+  }
+
+  /**
+   * Sonda de enquadramento, só com `?debug=1` (mesma regra do `window.__tank` do main). Publica o
+   * retângulo que a arena ocupa NA TELA — é o que permite a um teste de navegador afirmar "a
+   * arena está inteira dentro da área jogável e não embaixo do polegar" sem tentar adivinhar a
+   * borda do labirinto contando pixels claros num lightmap.
+   */
+  private publicarCamera(screenW: number, screenH: number, playW: number, playH: number): void {
+    if (!new URLSearchParams(location.search).has('debug')) return;
+    const w = this.worldWidth * this.baseScale;
+    const h = this.worldHeight * this.baseScale;
+    (window as unknown as { __tankCam?: unknown }).__tankCam = {
+      tela: { w: screenW, h: screenH },
+      reservas: this.reservas,
+      jogavel: { w: playW, h: playH },
+      escala: this.baseScale,
+      mundo: { w: this.worldWidth, h: this.worldHeight },
+      arena: { x: this.baseX - w / 2, y: this.baseY - h / 2, w, h },
+      dpr: this.app.renderer.resolution,
+      fx: this.post.qualidadeAtual,
+    };
   }
 
   /**
@@ -1432,6 +1576,8 @@ export class Renderer {
       this.particles.update(worldDtS);
       this.lights.update(worldDtS);
       this.bullets.updateTime(worldDtS);
+      this.powerupField.update(worldDtS);
+      for (const cracha of this.crachas.values()) cracha.update(worldDtS);
       this.post.update(worldDtS);
     }
     for (const tank of this.tanks.values()) tank.tickDeathFlash();

@@ -7,6 +7,7 @@ import {
   MAX_BOUNCES,
   MAX_BULLETS,
   MAX_BULLETS_BY_PLAYERS,
+  POWERUP_MAX_RICOCHETE_EXTRA,
   SELF_IMMUNITY,
   TANK_RADIUS,
   TANK_SPEED,
@@ -42,7 +43,7 @@ const emptyInput: Input = { mover: null, fire: false };
 // rebote de nº MAX_BOUNCES + 1, este teto só precisa cobrir o caso de quina dupla antes da morte;
 // as duas iterações extras são folga numérica. O que sobrar de `timeLeft` fica para o tick
 // seguinte, e a bala que ainda tem rebote sobrando segue viva.
-const MAX_REFLEXOES_POR_TICK = MAX_BOUNCES + 3;
+const MAX_REFLEXOES_POR_TICK = MAX_BOUNCES + POWERUP_MAX_RICOCHETE_EXTRA + 3;
 
 function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, events: SimEvent[]): void {
   const maxBullets = maxBulletsFor(state.tanks.size);
@@ -62,9 +63,11 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
     if (input.mover !== null) {
       tank.heading = angleTowards(tank.heading, input.mover, TURN_RATE * dt);
 
+      // P1: `turbo` é bônus ADITIVO com zero-value neutro — sem power-up a conta é a de sempre.
+      const velocidade = TANK_SPEED * (1 + (tank.turbo ?? 0));
       const candidate: Vec2 = {
-        x: tank.x + Math.cos(input.mover) * TANK_SPEED * dt,
-        y: tank.y + Math.sin(input.mover) * TANK_SPEED * dt,
+        x: tank.x + Math.cos(input.mover) * velocidade * dt,
+        y: tank.y + Math.sin(input.mover) * velocidade * dt,
       };
       const resolved = circleVsAabbSlide(candidate, TANK_RADIUS, state.maze.walls);
       tank.x = resolved.x;
@@ -83,7 +86,8 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
       let aliveOwned = 0;
       for (const bullet of state.bullets) if (bullet.ownerId === tank.id) aliveOwned++;
 
-      if (aliveOwned < maxBullets) {
+      // P1: `municao` soma ao teto de balas simultâneas; 0 sem power-up.
+      if (aliveOwned < maxBullets + (tank.municao ?? 0)) {
         // A bala sai pela boca do CANO, não pela frente do chassi: com torre livre, os dois
         // apontam para lados diferentes na maior parte do tempo.
         const offset = TANK_RADIUS + BULLET_RADIUS + 4;
@@ -120,9 +124,15 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
           vy: dirY * BULLET_SPEED,
           bounces: 0,
           age: 0,
+          // P1, O CARIMBO: o efeito de ricochete é COPIADO do atirador para a bala agora, e nunca
+          // mais consultado no dono. É o que faz uma bala disparada com ricochete duplo continuar
+          // com ricochete duplo depois de o power-up expirar em quem atirou — e é o que permite ao
+          // cliente simular a mesma trajetória sem saber nada sobre o estado atual do atirador.
+          ricochete: tank.ricochete ?? 0,
         };
         state.bullets.push(bullet);
-        tank.fireCooldownLeft = FIRE_COOLDOWN;
+        // P1: `recarga` corta uma fração do cooldown; 0 sem power-up.
+        tank.fireCooldownLeft = FIRE_COOLDOWN * (1 - (tank.recarga ?? 0));
         events.push({
           type: 'shot',
           ownerId: tank.id,
@@ -132,6 +142,7 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
           angle: tank.turret,
           vx: bullet.vx,
           vy: bullet.vy,
+          ricochete: bullet.ricochete ?? 0,
           tick: state.tick,
         });
       }
@@ -340,7 +351,8 @@ function stepBullets(state: SimState, dt: number, events: SimEvent[]): void {
       // Fase 10 (volta da regra da Fase 4): o rebote de nº MAX_BOUNCES + 1 mata a bala. Morte na
       // parede é SILENCIOSA — a explosão pedida na Fase 5 é a de fim de vida e a de choque entre
       // balas, não a de encostar na parede pela última vez.
-      if (bullet.bounces > MAX_BOUNCES) {
+      // P1: o teto de rebotes é o da bala, não o do atirador — ver `Bullet.ricochete`.
+      if (bullet.bounces > MAX_BOUNCES + (bullet.ricochete ?? 0)) {
         events.push({
           type: 'bullet_expired',
           bulletId: bullet.id,
