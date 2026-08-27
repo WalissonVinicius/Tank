@@ -15,6 +15,8 @@ _*.png
 .idea
 *.log
 
-# Porte da simulação para Go e o arranjo de paridade cruzada. Nada disso entra na imagem: o
-# servidor de produção continua sendo o Node, e `go/out/` sozinho passa de 100 MB de dumps.
-go
+# O servidor de produção é o Go, então `go/` ENTRA na imagem — menos o que é rastro de trabalho:
+# `out/` são dumps da comparação de paridade (sozinho passa de 100 MB) e `bin/` são binários já
+# compilados para esta máquina, que não servem para o Linux do contêiner.
+go/out
+go/bin
