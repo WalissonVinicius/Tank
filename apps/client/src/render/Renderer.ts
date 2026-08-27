@@ -266,6 +266,9 @@ function suavizar(atual: number, alvo: number, dt: number, tau: number): number 
  */
 let instanciaAtiva: Renderer | null = null;
 
+// TEMPORARIO B3 — bissecção do congelamento na troca de rodada. Remover antes de entregar.
+const B3 = typeof location !== 'undefined' ? (new URLSearchParams(location.search).get('b3') ?? '') : '';
+
 export function rendererAtivo(): Renderer | null {
   return instanciaAtiva;
 }
@@ -398,6 +401,7 @@ export class Renderer {
   /** Segundos desde o início da montagem; negativo quando não há montagem em curso. */
   private montagemT = -1;
   private montagemQtd = 0;
+  private mascaraPronta = -1;
   private montagemAlcance = 1;
   /**
    * Quanto da entrada dos TANQUES já passou (1 fora da montagem). O anel, a seta e o holofote da
@@ -816,7 +820,7 @@ export class Renderer {
     this.worldWidth = maze.cols * maze.cell;
     this.worldHeight = maze.rows * maze.cell;
 
-    this.mazeView.setMaze(maze);
+    if (!B3.includes('semMazeView')) this.mazeView.setMaze(maze);
     // Labirinto novo = mundo de outro tamanho; a área dos filtros é medida em unidades de mundo.
     this.atualizarAreaDosFiltros();
     this.shadowMask.clear().rect(0, 0, this.worldWidth, this.worldHeight).fill(0xffffff);
@@ -836,11 +840,11 @@ export class Renderer {
     // arena ultrawide (câmera ~2,1×) ganharia uma textura de decalque na escala da rodada
     // anterior e as marcas de esteira sairiam borradas.
     this.fitCamera();
-    this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
+    if (!B3.includes('semDecal')) this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
     this.particles.setWorldBounds(this.worldWidth, this.worldHeight);
     // Rodada nova zera os itens: a agenda do labirinto anterior não sobrevive à virada.
     if (outroLabirinto) this.powerupField.limpar();
-    if (outroLabirinto) this.iniciarMontagem(maze);
+    if (outroLabirinto && !B3.includes('semMontagem')) this.iniciarMontagem(maze);
     // A rodada nova devolve a cor: mesmo que o `sync()` da partida anterior tenha deixado o mundo
     // cinza, o labirinto novo já começa colorido (ver V2 §3).
     this.post.setMundoCinza(false);
@@ -1360,15 +1364,18 @@ export class Renderer {
     }
 
     this.montagemQtd = n;
+    this.mascaraPronta = -1;
     this.montagemT = 0;
     this.montagemTanques = 0;
     this.mascaraParedes.clear();
-    this.mazeView.wallLayer.mask = this.mascaraParedes;
+    if (!B3.includes('semMascara')) this.mazeView.wallLayer.mask = this.mascaraParedes;
     if (this.sombraAlphaBase < 0) this.sombraAlphaBase = this.mazeView.wallShadowLayer.alpha;
-    this.mazeView.floorLayer.alpha = 0;
-    this.mazeView.wallShadowLayer.alpha = 0;
-    this.entitiesLayer.alpha = 0;
-    this.labelLayer.alpha = 0;
+    if (!B3.includes('semAlfas')) {
+      this.mazeView.floorLayer.alpha = 0;
+      this.mazeView.wallShadowLayer.alpha = 0;
+      this.entitiesLayer.alpha = 0;
+      this.labelLayer.alpha = 0;
+    }
   }
 
   /**
@@ -1384,10 +1391,21 @@ export class Renderer {
     this.montagemT += dt;
     const t = this.montagemT;
 
-    this.mazeView.floorLayer.alpha = clamp01(t / MONTAGEM_PISO_S);
+    if (!B3.includes('semAlfasFrame')) this.mazeView.floorLayer.alpha = clamp01(t / MONTAGEM_PISO_S);
 
     const g = this.mascaraParedes;
     const geo = this.montagemGeo;
+    if (B3.includes('mascaraEstatica')) {
+      if (this.mascaraPronta !== this.montagemQtd) {
+        this.mascaraPronta = this.montagemQtd;
+        g.clear();
+        for (let i = 0; i < this.montagemQtd; i++) {
+          const o = i * 5;
+          g.rect(geo[o]! - geo[o + 2]!, geo[o + 1]! - geo[o + 3]!, geo[o + 2]! * 2, geo[o + 3]! * 2);
+        }
+        g.fill(0xffffff);
+      }
+    } else if (!B3.includes('semMascara')) {
     g.clear();
     for (let i = 0; i < this.montagemQtd; i++) {
       const o = i * 5;
@@ -1403,11 +1421,12 @@ export class Renderer {
       g.rect(geo[o]! - hw * fx, geo[o + 1]! - hh * fy, hw * 2 * fx, hh * 2 * fy);
     }
     g.fill(0xffffff);
+    }
 
     // Frente de onda: um anel quente que passa por cima das paredes no instante em que elas
     // nascem. É o que dá CAUSA à sequência — sem ele as paredes só apareceriam sozinhas.
     const onda = clamp01((t - MONTAGEM_PAREDES_INICIO_S) / MONTAGEM_ONDA_S);
-    const acesa = onda > 0 && onda < 1;
+    const acesa = onda > 0 && onda < 1 && !B3.includes('semOnda');
     this.ondaMontagem.visible = acesa;
     if (acesa) {
       this.ondaMontagem
@@ -1417,11 +1436,12 @@ export class Renderer {
     }
 
     const sombra = clamp01((t - MONTAGEM_SOMBRA_INICIO) / (MONTAGEM_TOTAL_S - MONTAGEM_SOMBRA_INICIO));
-    this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase * sombra;
-
     this.montagemTanques = clamp01((t - MONTAGEM_TANQUES_INICIO_S) / MONTAGEM_TANQUES_S);
-    this.entitiesLayer.alpha = this.montagemTanques;
-    this.labelLayer.alpha = this.montagemTanques;
+    if (!B3.includes('semAlfasFrame')) {
+      this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase * sombra;
+      this.entitiesLayer.alpha = this.montagemTanques;
+      this.labelLayer.alpha = this.montagemTanques;
+    }
 
     if (t < MONTAGEM_TOTAL_S) return;
 
@@ -1604,7 +1624,7 @@ export class Renderer {
 
     // Só reatribui quando a lista mudou de verdade: `Container.filters =` reconstrói o efeito de
     // filtro do render group, e fazer isso todo frame é trabalho puro de graça.
-    const filtros = this.post.filters;
+    const filtros = B3.includes('semFiltros') ? [] : this.post.filters;
     if (filtros !== this.filtrosAplicados) {
       this.filtrosAplicados = filtros;
       this.world.filters = filtros;

@@ -102,6 +102,8 @@ type Sala struct {
 	seed         uint32
 	aspect       float64
 	timeLeft     float64
+	// Último segundo inteiro já publicado no estado frio. Ver talvezPublicarEstado.
+	ultimoSegundoPublicado float64
 	ownerID      string
 	totalRodadas int
 	dificuldade  string
@@ -897,14 +899,25 @@ func (s *Sala) marcarEstadoSujo() { s.estadoSujo = true }
 
 func (s *Sala) talvezPublicarEstado() {
 	agora := time.Now()
-	// Fora do lobby o `timeLeft` anda a cada tick, então o estado sai no ritmo do antigo
-	// `patchRate` do Colyseus (50 ms). No lobby nada muda sozinho e a sala fica muda até alguém
-	// clicar em alguma coisa.
-	relogioAndando := s.fase != FaseLobby && agora.Sub(s.ultimoEstadoEm) >= intervaloDoEstadoFrio
-	if !s.estadoSujo && !relogioAndando {
+	// O estado FRIO sai quando muda de verdade — e o relógio só conta como mudança quando vira
+	// de segundo.
+	//
+	// A primeira versão copiava o `patchRate` de 50 ms do Colyseus, mas o Colyseus mandava
+	// DELTA (só os campos alterados) e aqui vai o estado INTEIRO, com todos os jogadores. Medido
+	// em produção com 8 jogadores: 4.300 mensagens `state` em 30 s, ou seja 17,9 por segundo
+	// para cada um, e 11,2 KB/s por jogador contra os 1,6 KB/s projetados. Cada uma dessas é um
+	// JSON.parse do estado da sala inteira no cliente — era isso que engasgava a partida cheia.
+	//
+	// O que andava a 20 Hz era só o `timeLeft`, e o HUD mostra ele com `Math.ceil`: vinte
+	// mensagens por segundo para atualizar um número que muda uma vez por segundo. A barra do
+	// relógio continua lisa porque desliza por transição de CSS entre as atualizações.
+	segundoAtual := math.Ceil(s.timeLeft)
+	relogioVirou := s.fase != FaseLobby && segundoAtual != s.ultimoSegundoPublicado
+	if !s.estadoSujo && !relogioVirou {
 		return
 	}
 	s.estadoSujo = false
+	s.ultimoSegundoPublicado = segundoAtual
 	s.ultimoEstadoEm = agora
 	s.transmitir(MsgEstado, s.estadoFrio())
 }

@@ -491,6 +491,11 @@ body.em-jogo #btn-tela-cheia {
   background: var(--traco);
   transform-origin: left center;
   will-change: transform;
+  /* O estado frio agora sai a 1 Hz, não a 20: mandar o placar inteiro vinte vezes por segundo
+     só para mexer num relógio que o HUD mostra em segundos inteiros custava 11,2 KB/s por
+     jogador e um JSON.parse por mensagem. A transição faz a barra DESLIZAR entre as
+     atualizações, então ela continua lisa mesmo recebendo uma por segundo. */
+  transition: transform 1s linear;
 }
 
 /* Único resto do placar que fica em cena: num "último que sobra", saber se restam 2 ou 7 muda
