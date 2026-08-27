@@ -197,13 +197,29 @@ export interface ViewportMsg {
 // só o segundo caso explode na tela.
 export type BulletDeathReason = 'acerto' | 'colisao_bala' | 'parede_excedeu_rebotes' | 'expirou';
 
+/**
+ * Nascimento de bala. O servidor manda o EVENTO e cada cliente simula a trajetoria localmente
+ * com o mesmo codigo de `shared-sim` — e por isso que bala nao trafega pela rede.
+ *
+ * `vx`/`vy` vem PRONTOS e nao sao redundancia do `angle`. O `angle` e cosmetico (muzzle
+ * flash); a fisica e o vetor. Se o cliente recalculasse `cos(angle)`, a trajetoria dependeria da
+ * implementacao de trigonometria de cada ponta — e o dia em que o servidor for outra linguagem,
+ * `math.Cos` e `Math.cos` podem divergir no ultimo bit e o ricochete acontece em lugares
+ * diferentes em cada tela. Com o vetor pronto, o voo vira aritmetica linear pura, identica em
+ * qualquer implementacao de IEEE 754.
+ */
 export interface BulletSpawnMsg {
   id: string;
   ownerId: string;
   x: number;
   y: number;
-  angle: number; // rad
-  tick: number; // tick de simulação do servidor em que o disparo ocorreu
+  /** Direcao do cano no disparo — SO para o efeito visual. Nao use para fisica. */
+  angle: number;
+  /** Velocidade em px/s. E ISTO que define a trajetoria. */
+  vx: number;
+  vy: number;
+  /** Tick de simulacao do servidor em que o disparo ocorreu. */
+  tick: number;
 }
 
 export interface BulletDeadMsg {

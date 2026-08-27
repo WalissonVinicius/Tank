@@ -130,6 +130,8 @@ function stepTanks(state: SimState, inputs: Map<string, Input>, dt: number, even
           x: bx,
           y: by,
           angle: tank.turret,
+          vx: bullet.vx,
+          vy: bullet.vy,
           tick: state.tick,
         });
       }

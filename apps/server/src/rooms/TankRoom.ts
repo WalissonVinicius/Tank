@@ -766,6 +766,8 @@ export class TankRoom extends Room<{ state: TankRoomState; metadata: SalaMetadat
           x: event.x,
           y: event.y,
           angle: event.angle,
+          vx: event.vx,
+          vy: event.vy,
           tick: event.tick,
         });
       } else if (event.type === 'bullet_expired') {

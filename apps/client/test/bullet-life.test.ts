@@ -71,9 +71,17 @@ function medirLocal(maze: Maze, x: number, y: number, angulo: number, tetoTicks 
 }
 
 /** Mesma medição pelo caminho online: a bala entra por `bullet_spawn` no BulletPredictor. */
-function medirOnline(maze: Maze, x: number, y: number, angulo: number, tetoTicks = 1200): Medida {
+function medirOnline(
+  maze: Maze,
+  x: number,
+  y: number,
+  angulo: number,
+  vx: number,
+  vy: number,
+  tetoTicks = 1200,
+): Medida {
   const preditor = new BulletPredictor(maze);
-  preditor.spawn({ id: 'b0', ownerId: 'p0', x, y, angle: angulo, tick: 0 });
+  preditor.spawn({ id: 'b0', ownerId: 'p0', x, y, angle: angulo, vx, vy, tick: 0 });
 
   let ricochetes = 0;
   for (let t = 0; t < tetoTicks; t++) {
@@ -86,13 +94,19 @@ function medirOnline(maze: Maze, x: number, y: number, angulo: number, tetoTicks
 }
 
 /** Reproduz o ponto/ângulo de saída que a `step()` usa, para alimentar o caminho online. */
-function tiroDe(maze: Maze, x: number, y: number, angulo: number): { x: number; y: number; angle: number } {
+function tiroDe(
+  maze: Maze,
+  x: number,
+  y: number,
+  angulo: number,
+): { x: number; y: number; angle: number; vx: number; vy: number } {
   const tank: Tank = { id: 'p0', x, y, heading: angulo, turret: angulo, alive: true, fireCooldownLeft: 0 };
   const state: SimState = { tick: 0, maze, tanks: new Map([['p0', tank]]), bullets: [], nextBulletId: 0 };
   const eventos = step(state, new Map([['p0', { mover: null, fire: true, aim: angulo }]]), DT);
   const tiro = eventos.find((e) => e.type === 'shot');
   if (!tiro || tiro.type !== 'shot') throw new Error('o tanque não atirou');
-  return { x: tiro.x, y: tiro.y, angle: tiro.angle };
+  // O vetor vem do EVENTO, nao recalculado aqui: e exatamente o que o servidor manda na rede.
+  return { x: tiro.x, y: tiro.y, angle: tiro.angle, vx: tiro.vx, vy: tiro.vy };
 }
 
 describe('vida da bala — corredor livre', () => {
@@ -178,7 +192,7 @@ describe('paridade local x online', () => {
           // O ponto de spawn da bala é o mesmo que a `step()` calcula (boca do cano) — no
           // online é ele que viaja no `bullet_spawn`.
           const boca = tiroDe(maze, sp.x, sp.y, ang);
-          const online = medirOnline(maze, boca.x, boca.y, boca.angle);
+          const online = medirOnline(maze, boca.x, boca.y, boca.angle, boca.vx, boca.vy);
           expect(online.motivo).toBe(local.motivo);
           expect(online.ricochetes).toBe(local.ricochetes);
           expect(online.vida).toBeCloseTo(local.vida, 6);
@@ -200,7 +214,7 @@ describe('paridade local x online', () => {
     tank.alive = false; // mesma razão do `medirLocal`: a bala não pode morrer no próprio dono
 
     const preditor = new BulletPredictor(maze);
-    preditor.spawn({ id: 'b0', ownerId: 'p0', x: boca.x, y: boca.y, angle: boca.angle, tick: 0 });
+    preditor.spawn({ id: 'b0', ownerId: 'p0', x: boca.x, y: boca.y, angle: boca.angle, vx: boca.vx, vy: boca.vy, tick: 0 });
     // O tick que criou a bala no modo local já a moveu; o preditor precisa do mesmo passo para
     // os dois relógios ficarem alinhados.
     preditor.tick(DT);

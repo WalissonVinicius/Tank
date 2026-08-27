@@ -28,8 +28,10 @@ export class BulletPredictor {
       ownerId: msg.ownerId,
       x: msg.x,
       y: msg.y,
-      vx: Math.cos(msg.angle) * BULLET_SPEED,
-      vy: Math.sin(msg.angle) * BULLET_SPEED,
+      // Vetor VINDO DO SERVIDOR, nao recalculado aqui. Ver BulletSpawnMsg: recomputar
+      // cos/sin faria a trajetoria depender da trigonometria de cada ponta.
+      vx: msg.vx,
+      vy: msg.vy,
       bounces: 0,
       age: 0,
     };

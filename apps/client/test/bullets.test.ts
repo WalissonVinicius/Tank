@@ -6,12 +6,18 @@ import { BulletPredictor } from '../src/net/bullets.js';
 
 const DT = 1 / TICK_HZ;
 
+// O vetor vem PRONTO na mensagem (ver BulletSpawnMsg): o cliente nao recalcula cos/sin, para a
+// trajetoria nao depender da trigonometria de cada ponta. Aqui ele e montado uma vez, como o
+// servidor faria.
+const ANGULO = 0.7;
 const SPAWN = {
   id: 'b0',
   ownerId: 'jogador-a',
   x: 42,
   y: 42,
-  angle: 0.7,
+  angle: ANGULO,
+  vx: Math.cos(ANGULO) * BULLET_SPEED,
+  vy: Math.sin(ANGULO) * BULLET_SPEED,
   tick: 0,
 };
 

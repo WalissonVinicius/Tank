@@ -74,7 +74,30 @@ export interface Input {
 }
 
 export type SimEvent =
-  | { type: 'shot'; ownerId: string; bulletId: string; x: number; y: number; angle: number; tick: number }
+  /**
+   * `vx`/`vy` andam junto com `angle` de proposito, e nao sao redundancia.
+   *
+   * O `angle` e COSMETICO: serve para o muzzle flash apontar para o lado certo. Quem define a
+   * FISICA da bala e o par `vx`/`vy`, e ele viaja pronto para o cliente em vez de ser
+   * recalculado la com `cos`/`sin`.
+   *
+   * O motivo e portabilidade: o cliente simula a bala localmente com o MESMO codigo do servidor,
+   * e se um dia o servidor for outra linguagem, `math.Cos` de la e `Math.cos` do V8 podem
+   * divergir no ultimo bit. Mandando o vetor pronto, a trajetoria vira aritmetica linear pura
+   * (soma e multiplicacao, mais troca de sinal no rebote), que e identica em qualquer
+   * implementacao de IEEE 754. A divergencia deixa de ser possivel em vez de ser improvavel.
+   */
+  | {
+      type: 'shot';
+      ownerId: string;
+      bulletId: string;
+      x: number;
+      y: number;
+      angle: number;
+      vx: number;
+      vy: number;
+      tick: number;
+    }
   | { type: 'bounce'; bulletId: string; x: number; y: number; normal: Vec2; tick: number }
   | {
       type: 'death';
