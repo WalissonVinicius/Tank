@@ -1,0 +1,4 @@
+# Saídas da comparação de paridade — regeneráveis com `node compare.mjs`, e grandes
+# (os dumps de sonda matemática passam de 100 MB juntos).
+out/
+bin/
