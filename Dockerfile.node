@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+
+# O SERVIDOR NODE (Colyseus) — mantido para comparação, NÃO é mais o que a imagem padrão sobe.
+#
+# Ele continua compilando e rodando, e é com ele que a medição de memória e latência do servidor
+# Go foi comparada (ver `go/README.md`). O que ele NÃO faz mais é servir o cliente deste repo: o
+# cliente trocou o `@colyseus/sdk` por um WebSocket cru falando com o servidor Go, então subir
+# esta imagem entrega uma tela de entrada que não consegue criar sala.
+#
+# Para rodá-lo:  docker build -f Dockerfile.node -t tank-node . && docker run -p 3001:3000 tank-node
+
+# ---------- Stage 1: build ----------
+# Debian (glibc), NÃO Alpine (musl) — e isso é uma decisão de rede, não de gosto.
+#
+# No Alpine o better-sqlite3 não encontra binário pré-compilado (os prebuilds publicados são
+# para glibc), então cai no node-gyp, que precisa baixar os headers do Node do
+# `unofficial-builds.nodejs.org` — o único host que serve headers musl e o mais frágil da
+# cadeia, sem CDN. O build morria ali com `read ETIMEDOUT`.
+#
+# Com glibc os headers vêm do nodejs.org oficial, que tem CDN, e o download passa. A
+# compilação em si CONTINUA acontecendo (o prebuild não é aplicado aqui) — por isso
+# python3/make/g++ são obrigatórios, não rede de segurança. Custa ~2 min de build.
+FROM node:24-slim AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY packages ./packages
+COPY apps ./apps
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm build
+# NAO usar `pnpm prune --prod` aqui. Ele e so otimizacao de tamanho, e a imagem so
+# chegou a rodar com a arvore podada -- o container crashava em loop (restart_count 10,
+# last_restart_type "crash") enquanto o mesmo bundle sobe sem erro fora do container.
+# Carregar node_modules inteiro custa alguns MB e elimina a variavel.
+
+# ---------- Stage 2: runtime ----------
+FROM node:24-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV DATA_DIR=/app/data
+
+# Copia a arvore INTEIRA do builder, nao pedacos escolhidos a dedo.
+#
+# O pnpm monta node_modules como floresta de symlinks: apps/server/node_modules/express
+# aponta para node_modules/.pnpm/express@4.21.2/node_modules/express. Copiando so
+# /app/node_modules + /app/apps/server/node_modules a teia quebra e o container morria com
+# ERR_MODULE_NOT_FOUND "Cannot find package 'express'" -- reiniciando ate o Docker desistir.
+# Copiar /app inteiro garante que o runtime ve exatamente a arvore que funcionou no build.
+COPY --from=builder /app ./
+
+EXPOSE 3000
+CMD ["node", "apps/server/dist/index.js"]

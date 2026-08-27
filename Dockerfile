@@ -1,48 +1,52 @@
 # syntax=docker/dockerfile:1
 
-# ---------- Stage 1: build ----------
-# Debian (glibc), NÃO Alpine (musl) — e isso é uma decisão de rede, não de gosto.
+# Tank Ricochete — 1 container, 1 porta (3000), servidor Go servindo o cliente estático e o
+# WebSocket do jogo na mesma porta.
 #
-# No Alpine o better-sqlite3 não encontra binário pré-compilado (os prebuilds publicados são
-# para glibc), então cai no node-gyp, que precisa baixar os headers do Node do
-# `unofficial-builds.nodejs.org` — o único host que serve headers musl e o mais frágil da
-# cadeia, sem CDN. O build morria ali com `read ETIMEDOUT`.
-#
-# Com glibc os headers vêm do nodejs.org oficial, que tem CDN, e o download passa. A
-# compilação em si CONTINUA acontecendo (o prebuild não é aplicado aqui) — por isso
-# python3/make/g++ são obrigatórios, não rede de segurança. Custa ~2 min de build.
-FROM node:24-slim AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN corepack enable
+# O servidor Node (Colyseus) continua no repo e continua compilando: `Dockerfile.node`. Ele não é
+# mais o que sobe aqui porque o cliente trocou o `@colyseus/sdk` por um WebSocket cru — ver
+# `go/README.md`, seção "O servidor".
 
+# ---------- Estágio 1: o cliente ----------
+# Debian (glibc), NÃO Alpine (musl): no Alpine o esbuild/rollup do Vite cai em prebuilds que nem
+# sempre existem para musl, e o build morria baixando headers de hosts sem CDN. Foi a mesma
+# decisão que a imagem antiga já carregava, e ela continua valendo — só que agora vale apenas
+# para o cliente, porque o servidor não tem mais nenhuma dependência nativa.
+FROM node:24-slim AS cliente
+RUN corepack enable
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
 
-RUN pnpm install --frozen-lockfile
-RUN pnpm build
-# NAO usar `pnpm prune --prod` aqui. Ele e so otimizacao de tamanho, e a imagem so
-# chegou a rodar com a arvore podada -- o container crashava em loop (restart_count 10,
-# last_restart_type "crash") enquanto o mesmo bundle sobe sem erro fora do container.
-# Carregar node_modules inteiro custa alguns MB e elimina a variavel.
+RUN pnpm install --frozen-lockfile --filter @tank/client...
+RUN pnpm --filter @tank/client run build
 
-# ---------- Stage 2: runtime ----------
-FROM node:24-slim AS runtime
+# ---------- Estágio 2: o servidor ----------
+# `CGO_ENABLED=0` é o ponto da troca de `better-sqlite3` por `modernc.org/sqlite`: sem cgo o
+# binário sai estático, o estágio de runtime não precisa de compilador C nem de node_modules, e o
+# `pnpm prune --prod` que derrubava o container antigo deixa de existir como problema.
+FROM golang:1.27 AS servidor
+WORKDIR /src
+
+COPY go/go.mod go/go.sum ./
+RUN go mod download
+
+COPY go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/servidor ./cmd/servidor
+
+# ---------- Estágio 3: runtime ----------
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
-ENV NODE_ENV=production
+
 ENV PORT=3000
 ENV DATA_DIR=/app/data
+ENV CLIENT_DIST=/app/client
 
-# Copia a arvore INTEIRA do builder, nao pedacos escolhidos a dedo.
-#
-# O pnpm monta node_modules como floresta de symlinks: apps/server/node_modules/express
-# aponta para node_modules/.pnpm/express@4.21.2/node_modules/express. Copiando so
-# /app/node_modules + /app/apps/server/node_modules a teia quebra e o container morria com
-# ERR_MODULE_NOT_FOUND "Cannot find package 'express'" -- reiniciando ate o Docker desistir.
-# Copiar /app inteiro garante que o runtime ve exatamente a arvore que funcionou no build.
-COPY --from=builder /app ./
+COPY --from=servidor /out/servidor /app/servidor
+COPY --from=cliente /app/apps/client/dist /app/client
 
 EXPOSE 3000
-CMD ["node", "apps/server/dist/index.js"]
+CMD ["/app/servidor"]

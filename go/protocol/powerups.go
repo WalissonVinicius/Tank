@@ -30,3 +30,37 @@ var PowerupValor = map[string]float64{
 // TiposDePowerUp é a ordem canônica dos efeitos. Slice, e não as chaves do mapa: `range` sobre
 // mapa em Go embaralha, e a ordem canônica é o que o saco de sorteio embaralha de propósito.
 var TiposDePowerUp = [4]string{"ricochete", "municao", "recarga", "turbo"}
+
+// -------------------------------------------------------------------------------------------
+// Nascimento — tudo em SEGUNDOS aqui; quem converte para tick é `AgendaDePowerUps`.
+// -------------------------------------------------------------------------------------------
+
+const (
+	// PowerupPrimeiroS é a espera até o primeiro item da rodada.
+	PowerupPrimeiroS = 4.0
+	// PowerupIntervaloS é o ritmo dos nascimentos seguintes.
+	PowerupIntervaloS = 6.0
+	// PowerupJitterS é o jitter (±) sorteado do RNG semeado em cima do ritmo.
+	PowerupJitterS = 1.0
+	// PowerupVidaNoMapaS é quanto tempo o item espera por alguém antes de sumir sozinho.
+	PowerupVidaNoMapaS = 11.0
+	// PowerupMaxNoChao é o teto de itens no chão ao mesmo tempo.
+	PowerupMaxNoChao = 3
+	// PowerupRaio é o raio de colisão do item, em px.
+	PowerupRaio = 15.0
+	// PowerupQuedaS é quanto tempo o item passa no ar, de paraquedas, ANTES de tocar o chão. É uma
+	// ANTECIPAÇÃO, não um atraso: ele aparece no céu em `nasceEmTick - PowerupQuedaS*TickHz` e pousa
+	// exatamente em `nasceEmTick`, que continua sendo o tick em que ele fica pegável.
+	PowerupQuedaS = 2.5
+)
+
+// PowerupDuracao é quanto tempo cada efeito dura, em segundos.
+//
+// Entra no dump de constantes pelo mesmo motivo de `PowerupValor`: uma duração reajustada de um
+// lado só apareceria como um relógio de efeito desligando em ticks diferentes nas duas pontas.
+var PowerupDuracao = map[string]float64{
+	"ricochete": 9,
+	"municao":   12,
+	"recarga":   10,
+	"turbo":     10,
+}

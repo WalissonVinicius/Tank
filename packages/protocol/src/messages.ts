@@ -342,3 +342,53 @@ export interface GameOverMsg {
     covardeEstrategico: string | null;
   };
 }
+
+/**
+ * Canais do TRANSPORTE — os que existem por causa do WebSocket cru, e não do jogo.
+ *
+ * Com o Colyseus eles não precisavam existir: entrar numa sala era um HTTP de matchmaking, o
+ * estado frio vinha pelo `@colyseus/schema` e a saída era o `leave()` do SDK. Com um WebSocket
+ * cru, tudo isso passa a ser mensagem — e pelo mesmo motivo dos canais de jogo acima, o nome mora
+ * aqui e não escrito à mão nas duas pontas.
+ *
+ * Espelhados em `go/server/protocolo.go`.
+ */
+export const TransportType = {
+  /** Primeiro quadro da conexão: `{ modo: 'criar' | 'codigo' | 'reconectar', ... }`. */
+  Entrar: 'entrar',
+  /** Resposta do servidor: `{ roomId, sessionId, token }`. */
+  Entrou: 'entrou',
+  /** Recusa da entrada, com motivo legível. Vem antes do fechamento. */
+  Erro: 'erro',
+  /** Saída CONSENTIDA (menu de pausa). Distingue "saí" de "caiu" — ver `allowReconnection`. */
+  Sair: 'sair',
+  /** Estado frio da sala, o que o `@colyseus/schema` carregava. */
+  Estado: 'state',
+} as const;
+
+export type TransportType = (typeof TransportType)[keyof typeof TransportType];
+
+/** Modo de entrada pedido no canal `entrar`. */
+export type ModoDeEntrada = 'criar' | 'codigo' | 'reconectar';
+
+/** Corpo do canal `entrar`. */
+export interface EntrarMsg {
+  modo: ModoDeEntrada;
+  codigo?: string;
+  nome?: string;
+  deviceId?: string;
+  cor?: number;
+  bots?: number;
+  rodadas?: number;
+  /** Token de reconexão guardado no `localStorage`; só no modo `reconectar`. */
+  token?: string;
+  /** Proporção da área jogável, adiantada já na entrada (ver `ViewportMsg`). */
+  aspect?: number;
+}
+
+/** Corpo do canal `entrou`. */
+export interface EntrouMsg {
+  roomId: string;
+  sessionId: string;
+  token: string;
+}

@@ -28,10 +28,16 @@ const (
 	SecSpawns
 	SecSim
 	SecEventos
+	// SecBots é a sequência de `Input` que a IA produz, tick a tick. Seção PRÓPRIA de propósito:
+	// dois bots que chegam ao mesmo lugar por caminhos diferentes têm a mesma `simulacao` e
+	// `bots` diferentes, e é a segunda que denuncia o porte errado.
+	SecBots
+	// SecPowerups é a agenda, a coleta, os relógios dos efeitos e os campos que a simulação lê.
+	SecPowerups
 	numSecoes
 )
 
-var nomesSecao = [numSecoes]string{"labirinto", "spawns", "simulacao", "eventos"}
+var nomesSecao = [numSecoes]string{"labirinto", "spawns", "simulacao", "eventos", "bots", "powerups"}
 
 // NomeSecao devolve o rótulo legível de uma seção.
 func NomeSecao(s Secao) string { return nomesSecao[s] }

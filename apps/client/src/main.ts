@@ -308,6 +308,16 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
   /** Itens no chão do tick corrente, copiados uma vez para os bots e para o `RenderView`. */
   let itensNoChao: ItemDePowerUp[] = [];
   /**
+   * Itens ainda no ar, de paraquedas. Lido NO MESMO PONTO do laço de tick que `itensNoChao` e
+   * não no fim do frame: `state.tick` já foi incrementado quando o `RenderView` é montado, e a
+   * diferença de UM tick abria um buraco entre as duas listas exatamente no tick do pouso — o
+   * item sumia da lista por um frame, a view era destruída com o pop de saída e renascia com a
+   * animação de entrada. Na captura de vídeo isso aparecia como o item piscando ao tocar o chão.
+   */
+  let itensCaindo: readonly ItemDePowerUp[] = [];
+  /** O tick em que as duas listas acima foram lidas. `state.tick` já andou quando o frame monta. */
+  let tickDosItens = 0;
+  /**
    * `?itens=0` desliga o nascimento — a MESMA partida, sem power-up nenhum. Existe para a
    * comparação A/B de desempenho ser feita no mesmo build, e não contra uma medição antiga de
    * outro estado do código (o repositório tem vários workers mexendo em paralelo).
@@ -372,6 +382,8 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
     campoDePowerups = new CampoDePowerUps(maze, seed + round - 1);
     efeitosDePowerup.limpar();
     itensNoChao = [];
+    itensCaindo = [];
+    tickDosItens = 0;
     renderer.setMaze(maze);
     eliminationOrder = [];
     vencedorRodadaId = null;
@@ -597,6 +609,11 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
         // Uma leitura do campo por tick: `noChao` devolve um array reaproveitado, e a cópia é
         // consumida pelos bots aqui e pelo `RenderView` no fim do frame.
         itensNoChao = comItens ? [...campoDePowerups.noChao(state.tick)] : [];
+        // O que ainda está no ar entra só na lista de DESENHO. `itensNoChao`, que alimenta os
+        // bots e a arbitragem da coleta, continua sendo só o que já pousou — é isso que impede
+        // alguém de arrancar o item do ar por estar parado embaixo do paraquedas.
+        itensCaindo = comItens ? [...campoDePowerups.caindo(state.tick)] : [];
+        tickDosItens = state.tick;
 
         const inputs = new Map<string, Input>();
         for (const p of players) {
@@ -659,12 +676,14 @@ async function runLocalMode(params: URLSearchParams, renderer: Renderer, telas: 
       // Fora da rodada some tudo, pela mesma razão das balas: o `step()` parou, e um item pairando
       // durante a tela de fim de rodada mente sobre o estado do jogo.
       powerups: emJogo
-        ? itensNoChao.map((item) => ({
+        ? [...itensCaindo, ...itensNoChao].map((item) => ({
             id: item.id,
             tipo: item.tipo,
             x: item.x,
             y: item.y,
-            restante: (item.sumeEmTick - state.tick) / TICK_HZ,
+            // Para quem está no ar isto passa de `POWERUP_VIDA_NO_MAPA_S`, e a sobra é o que falta
+            // para pousar. O render lê a altura daí, então a queda vem do TICK e não do relógio.
+            restante: (item.sumeEmTick - tickDosItens) / TICK_HZ,
           }))
         : [],
       // Fora da rodada o `step()` não roda mais, mas as balas que estavam em voo continuavam em
@@ -1471,6 +1490,8 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
     // Tick da rodada — o mesmo relógio que o servidor usa para a agenda de itens, deslocado pela
     // largada. Antes dela `ticksDaLargada` é infinito e a conta dá `-Infinity`: nada no chão.
     const tickDaRodada = ticksSimulados - ticksDaLargada;
+    // Duas listas separadas, como no modo local: `caindo` só desenha, `noChao` é o que vale.
+    const itensCaindo = emJogo && campoDePowerups ? campoDePowerups.caindo(tickDaRodada) : [];
     itensNoChao = emJogo && campoDePowerups ? campoDePowerups.noChao(tickDaRodada) : [];
     const view: RenderView = {
       tanks: [...playersById.values()].flatMap((p) => {
@@ -1490,7 +1511,7 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
           },
         ];
       }),
-      powerups: itensNoChao.map((item) => ({
+      powerups: [...itensCaindo, ...itensNoChao].map((item) => ({
         id: item.id,
         tipo: item.tipo,
         x: item.x,

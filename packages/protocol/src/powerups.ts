@@ -105,3 +105,21 @@ export const POWERUP_RAIO = 15;
  * de reflexões por tick em `sim.ts` — o valor real de cada bala vem carimbado nela.
  */
 export const POWERUP_MAX_RICOCHETE_EXTRA = 1;
+
+// -------------------------------------------------------------------------------------------
+// Chegada de paraquedas (P2) — a queda é ANIMAÇÃO, e este número é o que a mantém determinística.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Quanto tempo o item passa no ar, de paraquedas, ANTES de tocar o chão.
+ *
+ * A janela é uma ANTECIPAÇÃO, não um atraso: o item aparece no céu em
+ * `nasceEmTick - POWERUP_QUEDA_S * TICK_HZ` e POUSA exatamente em `nasceEmTick`, que continua
+ * sendo o tick em que ele fica pegável. Ninguém arranca o item do ar (a arbitragem do servidor
+ * nunca o enxerga antes do pouso) e nenhum relógio local decide nada — a queda inteira é derivada
+ * do mesmo tick nas duas pontas, e quem entra no meio dela a vê no ponto certo.
+ *
+ * 2,5 s é o tempo de atravessar ~2 células de labirinto: dá para ver, decidir e correr. Menos que
+ * isso não cria disputa; mais que isso entedia.
+ */
+export const POWERUP_QUEDA_S = 2.5;

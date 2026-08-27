@@ -20,6 +20,7 @@ import {
   POWERUP_JITTER_S,
   POWERUP_MAX_NO_CHAO,
   POWERUP_PRIMEIRO_S,
+  POWERUP_QUEDA_S,
   POWERUP_RAIO,
   POWERUP_VIDA_NO_MAPA_S,
   TANK_RADIUS,
@@ -58,6 +59,12 @@ export interface ColetaDePowerUp {
  * apertar. O que não chega a nascer simplesmente nunca sai da lista.
  */
 const ITENS_POR_RODADA = 20;
+
+/**
+ * A queda de paraquedas, medida em TICKS. É ela que faz a animação ser IGUAL em todo mundo: a
+ * altura do item é lida do tick da rodada, nunca do relógio de quem desenha.
+ */
+const QUEDA_EM_TICKS = Math.round(POWERUP_QUEDA_S * TICK_HZ);
 
 /** Distância mínima, em células, entre dois itens consecutivos da agenda. */
 const CELULAS_DE_FOLGA = 2;
@@ -135,6 +142,7 @@ export class CampoDePowerUps {
   readonly agenda: readonly ItemDePowerUp[];
   private readonly pegos = new Set<number>();
   private readonly visiveis: ItemDePowerUp[] = [];
+  private readonly noAr: ItemDePowerUp[] = [];
   private readonly coletas: ColetaDePowerUp[] = [];
 
   constructor(maze: Maze, seed: number) {
@@ -159,6 +167,32 @@ export class CampoDePowerUps {
       if (this.visiveis.length >= POWERUP_MAX_NO_CHAO) break;
     }
     return this.visiveis;
+  }
+
+  /**
+   * Itens CAINDO DE PARAQUEDAS neste tick — os que ainda não pousaram (P2).
+   *
+   * É uma janela de ANTECIPAÇÃO, não de atraso: o item entra aqui em
+   * `nasceEmTick - QUEDA_EM_TICKS` e sai dela no mesmo tick em que `noChao` o assume, sem buraco
+   * entre as duas listas. Por isso a DISPONIBILIDADE não mudou um tick sequer em relação a antes
+   * de o paraquedas existir, e `coletar()` — que lê `estaNoChao` — nunca enxerga um item no ar.
+   *
+   * Método SEPARADO de `noChao` de propósito: quem arbitra a coleta e quem alimenta os bots
+   * continua chamando `noChao`, e só quem DESENHA chama isto. Uma lista só entregaria o item de
+   * graça a quem estivesse parado embaixo do paraquedas.
+   *
+   * O array é REAPROVEITADO entre chamadas, como o de `noChao`: vale até a próxima chamada.
+   */
+  caindo(tick: number): readonly ItemDePowerUp[] {
+    this.noAr.length = 0;
+    for (const item of this.agenda) {
+      // A agenda é crescente em tick: o primeiro que nem começou a cair encerra a varredura.
+      if (item.nasceEmTick - QUEDA_EM_TICKS > tick) break;
+      if (item.nasceEmTick <= tick || this.pegos.has(item.id)) continue;
+      this.noAr.push(item);
+      if (this.noAr.length >= POWERUP_MAX_NO_CHAO) break;
+    }
+    return this.noAr;
   }
 
   /** Tira o item do chão. Chamado pelo servidor ao arbitrar e pelo cliente ao receber o evento. */

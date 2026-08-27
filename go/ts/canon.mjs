@@ -4,8 +4,8 @@
 // seu padrão de bits IEEE-754, em little-endian. Comparação exata ou nada.
 import { createHash } from 'node:crypto';
 
-export const SEC = { maze: 0, spawns: 1, sim: 2, eventos: 3 };
-export const NOMES_SECAO = ['labirinto', 'spawns', 'simulacao', 'eventos'];
+export const SEC = { maze: 0, spawns: 1, sim: 2, eventos: 3, bots: 4, powerups: 5 };
+export const NOMES_SECAO = ['labirinto', 'spawns', 'simulacao', 'eventos', 'bots', 'powerups'];
 
 const utf8 = new TextEncoder();
 

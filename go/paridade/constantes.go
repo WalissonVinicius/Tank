@@ -1,6 +1,9 @@
 package paridade
 
-import "github.com/simplex/tank/go/protocol"
+import (
+	"github.com/simplex/tank/go/protocol"
+	"github.com/simplex/tank/go/sim"
+)
 
 // Constantes despeja a tabela de tuning inteira no sink.
 //
@@ -45,6 +48,27 @@ func Constantes(s Sink) {
 	inteiro("POWERUP_MAX_RICOCHETE_EXTRA", protocol.PowerupMaxRicocheteExtra)
 	for _, tipo := range protocol.TiposDePowerUp {
 		num("POWERUP_"+tipo, protocol.PowerupValor[tipo])
+	}
+	// Duração e agenda entram aqui pelo mesmo motivo dos valores: `AgendaDePowerUps` converte
+	// segundos em tick com `Math.round`, e um segundo diferente de um lado só desloca o item
+	// inteiro sem dizer por quê.
+	for _, tipo := range protocol.TiposDePowerUp {
+		num("POWERUP_DUR_"+tipo, protocol.PowerupDuracao[tipo])
+	}
+	num("POWERUP_PRIMEIRO_S", protocol.PowerupPrimeiroS)
+	num("POWERUP_INTERVALO_S", protocol.PowerupIntervaloS)
+	num("POWERUP_JITTER_S", protocol.PowerupJitterS)
+	num("POWERUP_VIDA_NO_MAPA_S", protocol.PowerupVidaNoMapaS)
+	inteiro("POWERUP_MAX_NO_CHAO", protocol.PowerupMaxNoChao)
+	num("POWERUP_RAIO", protocol.PowerupRaio)
+	num("POWERUP_QUEDA_S", protocol.PowerupQuedaS)
+
+	// As três receitas de bot. Tuning como qualquer outro: um `ticksDeReacao` diferente de um lado
+	// só apareceria como uma divergência de input no meio da partida, sem dizer por quê.
+	for _, nivel := range sim.NiveisDeBot {
+		c := sim.BotDificuldade[nivel]
+		s.Registro(SecMaze, "bot", nivel, c.AimErrorRad, c.TurnThreshold, c.TicksDeReacao,
+			c.HorizonteDeAmeaca, c.Ricocheteia, c.EvitaAutogol, c.UsaParede)
 	}
 
 	for n := 2; n <= 10; n++ {

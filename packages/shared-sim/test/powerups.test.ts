@@ -15,6 +15,7 @@ import {
   MAX_BOUNCES,
   MAX_BULLETS_BY_PLAYERS,
   POWERUP,
+  POWERUP_QUEDA_S,
   TANK_RADIUS,
   TANK_SPEED,
   TICK_HZ,
@@ -109,6 +110,70 @@ describe('nascimento determinístico', () => {
     expect(campo.noChao(primeiro.nasceEmTick).map((i) => i.id)).toContain(primeiro.id);
     expect(campo.noChao(primeiro.sumeEmTick - 1).map((i) => i.id)).toContain(primeiro.id);
     expect(campo.noChao(primeiro.sumeEmTick).map((i) => i.id)).not.toContain(primeiro.id);
+  });
+});
+
+describe('chegada de paraquedas (P2)', () => {
+  const QUEDA_TICKS = Math.round(POWERUP_QUEDA_S * TICK_HZ);
+
+  it('o item aparece no céu ANTES do nascimento e pousa exatamente no tick em que fica pegável', () => {
+    // A queda é ANTECIPAÇÃO, não atraso: se ela empurrasse o `nasceEmTick` para a frente, todo o
+    // ritmo da rodada andaria 2,5 s e o equilíbrio medido em P1 iria junto.
+    const maze = arenaVazia(6, 6);
+    const campo = new CampoDePowerUps(maze, 5);
+    const item = campo.agenda[0]!;
+
+    expect(campo.caindo(item.nasceEmTick - QUEDA_TICKS - 1)).toHaveLength(0);
+    expect(campo.caindo(item.nasceEmTick - QUEDA_TICKS).map((i) => i.id)).toContain(item.id);
+    expect(campo.caindo(item.nasceEmTick - 1).map((i) => i.id)).toContain(item.id);
+    expect(campo.caindo(item.nasceEmTick).map((i) => i.id)).not.toContain(item.id);
+    expect(campo.noChao(item.nasceEmTick).map((i) => i.id)).toContain(item.id);
+  });
+
+  it('caindo e noChao nunca compartilham um item: sem sobreposição e sem buraco entre as listas', () => {
+    const maze = arenaVazia(6, 6);
+    const campo = new CampoDePowerUps(maze, 21);
+    const item = campo.agenda[0]!;
+
+    for (let tick = item.nasceEmTick - QUEDA_TICKS - 5; tick < item.sumeEmTick + 5; tick++) {
+      const noAr = campo.caindo(tick).some((i) => i.id === item.id);
+      const noChao = campo.noChao(tick).some((i) => i.id === item.id);
+      expect(noAr && noChao).toBe(false);
+      // Do instante em que larga do céu até sumir sozinho o item está SEMPRE numa das duas listas.
+      const dentroDaVida = tick >= item.nasceEmTick - QUEDA_TICKS && tick < item.sumeEmTick;
+      expect(noAr || noChao).toBe(dentroDaVida);
+    }
+  });
+
+  it('item no ar não é coletável — quem nasceu embaixo do paraquedas não ganha de graça', () => {
+    const maze = arenaVazia(6, 6);
+    const campo = new CampoDePowerUps(maze, 22);
+    const item = campo.agenda[0]!;
+    const parado = estado(maze, [tanque('p1', item.x, item.y)]);
+
+    for (let tick = item.nasceEmTick - QUEDA_TICKS; tick < item.nasceEmTick; tick++) {
+      expect(campo.coletar(parado, tick)).toHaveLength(0);
+    }
+    expect(campo.coletar(parado, item.nasceEmTick)).toHaveLength(1);
+  });
+
+  it('a queda é a MESMA nos dois lados: mesma seed, mesma lista tick a tick', () => {
+    // É o que garante que o paraquedas esteja na mesma altura na tela de todo mundo — a animação
+    // sai do tick, não do relógio de quem desenha.
+    const maze = arenaVazia(6, 6);
+    const a = new CampoDePowerUps(maze, 23);
+    const b = new CampoDePowerUps(maze, 23);
+    for (let tick = 0; tick < 1200; tick += 7) {
+      expect(a.caindo(tick).map((i) => i.id)).toEqual(b.caindo(tick).map((i) => i.id));
+    }
+  });
+
+  it('item já pego não continua caindo na tela de ninguém', () => {
+    const maze = arenaVazia(6, 6);
+    const campo = new CampoDePowerUps(maze, 24);
+    const item = campo.agenda[0]!;
+    campo.marcarPego(item.id);
+    expect(campo.caindo(item.nasceEmTick - 1).map((i) => i.id)).not.toContain(item.id);
   });
 });
 
