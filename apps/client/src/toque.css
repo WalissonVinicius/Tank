@@ -610,3 +610,13 @@ body.toque .tela.ativa {
     width: min(520px, 82vw);
   }
 }
+
+/* O medidor de FPS (O1) respeita o entalhe como o resto do HUD, e o killfeed desce por baixo. */
+body.toque #desempenho {
+  top: calc(var(--k) * 8px + var(--sa-t));
+  right: calc(var(--k) * 10px + var(--sa-r));
+}
+
+body.toque #hud-feed {
+  top: calc(var(--k) * 8px + var(--sa-t) + var(--fps-altura, 30px) + var(--k) * 6px);
+}

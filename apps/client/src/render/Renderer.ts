@@ -19,7 +19,9 @@ import { LightFx } from './lights.js';
 import { DecalLayer } from './decals.js';
 import { ParticleSystem } from './particles.js';
 import { JuiceController } from './juice.js';
-import { PostFX, qualidadePara, type NivelFx } from './post.js';
+import { PostFX, qualidadeDoNivel, qualidadePara, type NivelFx, type Qualidade } from './post.js';
+import { AdaptadorDeQualidade, ehRenderizacaoPorSoftware } from './adaptativo.js';
+import { montarPainelDeDesempenho, type PainelDeDesempenho } from '../ui/desempenho.js';
 import { CrachaDeEfeitos, PowerUpFieldView, type ItemVisivel } from './powerups.js';
 
 export interface RenderTank {
@@ -87,6 +89,28 @@ const DPR_MAX = 2;
  * mais barata que existe aqui, e é a primeira a ser puxada.
  */
 const DPR_MAX_TOQUE = 1.5;
+/**
+ * Teto de resolução quando NÃO existe GPU (O1 §4).
+ *
+ * A medição desmontou a hipótese óbvia. Com SwiftShader em 1366×768, desligar a cadeia inteira de
+ * filtros levou o jogo de 2,0 para 2,6 fps — quase nada. Tirar os bots deu 2,4 fps, ou seja, a
+ * quantidade de entidades é irrelevante. O que manda é FILL RATE puro: cada pixel do mundo custa
+ * caro quando quem rasteriza é a CPU. Baixando a resolução do frame o jogo vai a 6,7 fps em 0,5 e
+ * a 15 fps em 0,35 — a partir daí encosta no piso da composição por software do próprio
+ * navegador e não melhora mais.
+ *
+ * 0,4 é o ponto escolhido: perto do joelho da curva, e nítido o bastante para a arena continuar
+ * legível quando o navegador esticá-la de volta. É feio, e é assumido — a alternativa medida é
+ * dois quadros por segundo, e junto com este teto o jogo diz ao jogador que o problema é
+ * aceleração por hardware desligada, com o caminho para arrumar.
+ */
+const DPR_MAX_SOFTWARE = 0.4;
+
+/**
+ * `true` quando o rasterizador é software. Decidido UMA vez, antes do `app.init()` — o
+ * `antialias` e a resolução do framebuffer não têm volta depois que a aplicação nasce.
+ */
+let semAceleracao = false;
 
 /** Teto de resolução do frame — o do celular é bem mais baixo (ver `DPR_MAX_TOQUE`). */
 function tetoDeDpr(): number {
@@ -95,7 +119,28 @@ function tetoDeDpr(): number {
   // aparelho não deixa escolher o próprio `devicePixelRatio`.
   const forcado = Number(new URLSearchParams(location.search).get('dpr'));
   if (Number.isFinite(forcado) && forcado > 0) return forcado;
+  if (semAceleracao) return DPR_MAX_SOFTWARE;
   return emModoToque() ? DPR_MAX_TOQUE : DPR_MAX;
+}
+
+/**
+ * Nome do rasterizador, lido num contexto DESCARTÁVEL antes de o Pixi existir.
+ *
+ * Tem que ser antes: `antialias` e `resolution` são escolhidos no `app.init()` e não mudam depois.
+ * O contexto é perdido de propósito no fim (`WEBGL_lose_context`) para não gastar um dos ~16 que
+ * o navegador concede por página.
+ *
+ * Sem a extensão de depuração o Chrome devolve um `RENDERER` genérico ("WebKit WebGL"), que não
+ * distingue GPU de software — nesse caso a detecção não acusa nada e o adaptador resolve pela
+ * medição, como em qualquer outra máquina.
+ */
+function sondarRasterizador(): string {
+  const gl = document.createElement('canvas').getContext('webgl2') ?? document.createElement('canvas').getContext('webgl');
+  if (gl === null) return '';
+  const info = gl.getExtension('WEBGL_debug_renderer_info');
+  const nome = String(gl.getParameter(info === null ? gl.RENDERER : info.UNMASKED_RENDERER_WEBGL));
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+  return nome;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -266,12 +311,38 @@ function suavizar(atual: number, alvo: number, dt: number, tau: number): number 
  */
 let instanciaAtiva: Renderer | null = null;
 
-// TEMPORARIO B3 — bissecção do congelamento na troca de rodada. Remover antes de entregar.
-const B3 = typeof location !== 'undefined' ? (new URLSearchParams(location.search).get('b3') ?? '') : '';
-
 export function rendererAtivo(): Renderer | null {
   return instanciaAtiva;
 }
+
+/**
+ * Publica o degrau atual e a linha do tempo das trocas.
+ *
+ * Sem `?debug=1`, ao contrário das outras sondas: mudança de degrau acontece um punhado de vezes
+ * numa partida inteira, então o custo é zero, e é a única resposta possível para "por que na
+ * máquina dele está mais feio" — inclusive num relato de jogador, que não vai reproduzir o
+ * problema com a flag ligada.
+ */
+function publicarFx(q: Qualidade, adaptador: AdaptadorDeQualidade | null): void {
+  const w = window as unknown as { __tankFx?: unknown; __tankFxTrilha?: unknown };
+  w.__tankFx = { nivel: q.nivel, resolucao: q.resolucao };
+  if (adaptador !== null) w.__tankFxTrilha = adaptador.trilha;
+}
+
+/**
+ * Quanto tempo o adaptador para de medir depois de uma troca de labirinto.
+ *
+ * A troca de rodada congela de 1 a 3 s (tarefa B3, ainda aberta). NÃO é upload de textura: nas
+ * rodadas que mais congelam não se cria nenhuma textura nem nenhum framebuffer novo — ver
+ * `_specs/B3-relatorio.md`. Seja qual for a causa, o pico não é da cadeia de filtros e nenhum
+ * degrau o conserta; medi-lo derrubaria a qualidade da partida inteira por um defeito de outro lugar.
+ *
+ * 8 s, e não 3,3: numa máquina lenta o congelamento é proporcionalmente maior (com a CPU 4× mais
+ * lenta a CAUDA dele ainda entregava três frames longos em fila depois de 4,5 s, e derrubava dois
+ * degraus de uma vez). Com rodadas de 20 a 45 s ainda sobra a maior parte do tempo para medir.
+ * Quando a B3 fechar, este número desce.
+ */
+const IGNORAR_TROCA_MS = 8000;
 
 interface TankRuntimeState {
   odometer: number;
@@ -351,8 +422,13 @@ export class Renderer {
   private filtrosAplicados: Filter[] | null = null;
   /** Faixas de tela ocupadas pelo HUD (relógio em cima, munição embaixo). Ver ui/layout.ts. */
   private reservas: Reservas = { top: 0, right: 0, bottom: 0, left: 0 };
-  /** `?fx=alto|reduzido|minimo` trava o nível de pós-processamento — existe para MEDIR cada degrau. */
+  /** `?fx=alto|reduzido|minimo|desligado` trava o degrau — existe para MEDIR cada um deles. */
   private nivelForcado: NivelFx | null = null;
+  /** Mede o tempo de frame e decide o degrau sozinho (O1). Só existe depois do primeiro `resize()`. */
+  private adaptador: AdaptadorDeQualidade | null = null;
+  private painelDesempenho: PainelDeDesempenho | null = null;
+  /** Megapixels do framebuffer atual — a resolução da cadeia depende do degrau E do tamanho. */
+  private megapixels = 1;
 
   /** Segundos restantes da contagem regressiva; `null` fora dela. Ver `setLargada()`. */
   private largadaRestante: number | null = null;
@@ -401,7 +477,6 @@ export class Renderer {
   /** Segundos desde o início da montagem; negativo quando não há montagem em curso. */
   private montagemT = -1;
   private montagemQtd = 0;
-  private mascaraPronta = -1;
   private montagemAlcance = 1;
   /**
    * Quanto da entrada dos TANQUES já passou (1 fora da montagem). O anel, a seta e o holofote da
@@ -787,9 +862,18 @@ export class Renderer {
   }
 
   static async create(parent: HTMLElement): Promise<Renderer> {
+    const params = new URLSearchParams(location.search);
+    // `?sw=1|0` finge (ou nega) a ausência de GPU — existe para medir o caminho de software numa
+    // máquina que tem placa, e para destravar quem for pego por engano pela expressão de detecção.
+    const swForcado = params.get('sw');
+    semAceleracao = swForcado === null ? ehRenderizacaoPorSoftware(sondarRasterizador()) : swForcado === '1';
+
     const app = new Application();
     await app.init({
-      antialias: true,
+      // MSAA é trabalho por amostra, e sem GPU cada amostra é a CPU. Onde ele mais custa é
+      // exatamente onde ele menos aparece: a resolução já caiu para 0,4 (ver `DPR_MAX_SOFTWARE`)
+      // e o navegador vai esticar o quadro de volta de qualquer jeito.
+      antialias: !semAceleracao,
       resolution: Math.min(window.devicePixelRatio || 1, tetoDeDpr()),
       autoDensity: true,
       background: WORLD_COLORS.background,
@@ -802,13 +886,41 @@ export class Renderer {
 
     const textures = createTextures(app.renderer);
     const renderer = new Renderer(app, textures);
-    const fx = new URLSearchParams(location.search).get('fx');
-    if (fx === 'alto' || fx === 'reduzido' || fx === 'minimo') renderer.nivelForcado = fx;
+    const fx = params.get('fx');
+    if (fx === 'alto' || fx === 'reduzido' || fx === 'minimo' || fx === 'desligado') {
+      renderer.nivelForcado = fx;
+    }
+    renderer.painelDesempenho = montarPainelDeDesempenho(parent.parentElement ?? parent);
+    // Primeiro o palpite pelo tamanho da tela — é tudo o que existe antes de haver uma amostra
+    // de tempo de frame.
     renderer.resize();
+
+    // Renderização por SOFTWARE não é caso de descer a escada devagar: a cadeia cheia dá 2 fps
+    // medidos em produção, e três degraus de espera são três degraus de sofrimento. Começa no
+    // fim da escada e avisa o jogador de que o problema está no navegador, não no jogo.
+    const partida: NivelFx =
+      semAceleracao && renderer.nivelForcado === null ? 'desligado' : renderer.post.qualidadeAtual.nivel;
+    renderer.adaptador = new AdaptadorDeQualidade(partida, renderer.nivelForcado !== null);
+    renderer.aplicarNivel(partida);
+    if (semAceleracao) renderer.painelDesempenho.avisarSoftware();
+
     // Compila os shaders dos filtros de morte agora, na tela de entrada, e não no primeiro
     // abate — ver `PostFX.prewarm()`.
     renderer.post.prewarm();
     return renderer;
+  }
+
+  /**
+   * Troca o degrau de pós-processamento mantendo a resolução da cadeia coerente com o tamanho da
+   * tela — os dois andam juntos (O1 §1). Ponto único de aplicação: o adaptador, o `?fx=` e o
+   * `resize()` passam todos por aqui.
+   */
+  private aplicarNivel(nivel: NivelFx): void {
+    // `?fx=alto` significa "quero a cadeia cheia para medir", então a resolução também é a cheia.
+    const q = this.nivelForcado === 'alto' ? { nivel, resolucao: 1 } : qualidadeDoNivel(nivel, this.megapixels, emModoToque());
+    this.post.aplicarQualidade(q);
+    this.painelDesempenho?.setNivel(nivel);
+    publicarFx(q, this.adaptador);
   }
 
   setMaze(maze: Maze): void {
@@ -816,11 +928,13 @@ export class Renderer {
     // novo (rodada nova) manda a arena se montar outra vez. Sem esta comparação a arena inteira
     // se remontaria no meio do tiroteio.
     const outroLabirinto = maze !== this.currentMaze;
+    // Ver `IGNORAR_TROCA_MS`: o engasgo da troca de rodada não é da cadeia de filtros.
+    if (outroLabirinto) this.adaptador?.ignorarPor(performance.now(), IGNORAR_TROCA_MS);
     this.currentMaze = maze;
     this.worldWidth = maze.cols * maze.cell;
     this.worldHeight = maze.rows * maze.cell;
 
-    if (!B3.includes('semMazeView')) this.mazeView.setMaze(maze);
+    this.mazeView.setMaze(maze);
     // Labirinto novo = mundo de outro tamanho; a área dos filtros é medida em unidades de mundo.
     this.atualizarAreaDosFiltros();
     this.shadowMask.clear().rect(0, 0, this.worldWidth, this.worldHeight).fill(0xffffff);
@@ -840,11 +954,11 @@ export class Renderer {
     // arena ultrawide (câmera ~2,1×) ganharia uma textura de decalque na escala da rodada
     // anterior e as marcas de esteira sairiam borradas.
     this.fitCamera();
-    if (!B3.includes('semDecal')) this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
+    this.decals.reset(this.worldWidth, this.worldHeight, this.baseScale * this.app.renderer.resolution);
     this.particles.setWorldBounds(this.worldWidth, this.worldHeight);
     // Rodada nova zera os itens: a agenda do labirinto anterior não sobrevive à virada.
     if (outroLabirinto) this.powerupField.limpar();
-    if (outroLabirinto && !B3.includes('semMontagem')) this.iniciarMontagem(maze);
+    if (outroLabirinto) this.iniciarMontagem(maze);
     // A rodada nova devolve a cor: mesmo que o `sync()` da partida anterior tenha deixado o mundo
     // cinza, o labirinto novo já começa colorido (ver V2 §3).
     this.post.setMundoCinza(false);
@@ -1154,15 +1268,12 @@ export class Renderer {
     this.reservas = reservasDoJogo(this.app.screen.height, this.app.screen.width);
     // O que pesa nos filtros são os pixels REAIS do framebuffer: px CSS × resolução, ao quadrado.
     const res = this.app.renderer.resolution;
-    const megapixels = (this.app.screen.width * res * this.app.screen.height * res) / 1e6;
-    const auto = qualidadePara(megapixels, emModoToque());
-    this.post.aplicarQualidade(
-      this.nivelForcado === 'alto'
-        ? { nivel: 'alto', resolucao: 1 }
-        : this.nivelForcado !== null
-          ? { nivel: this.nivelForcado, resolucao: auto.resolucao }
-          : auto,
-    );
+    this.megapixels = (this.app.screen.width * res * this.app.screen.height * res) / 1e6;
+    // O tamanho da tela só decide o degrau de PARTIDA (e a resolução da cadeia em cada degrau);
+    // depois de o adaptador existir, quem manda é a medição de tempo de frame — trocar de
+    // monitor não pode devolver a qualidade cheia a uma máquina que já provou não dar conta.
+    const nivel = this.nivelForcado ?? this.adaptador?.nivel ?? qualidadePara(this.megapixels, emModoToque()).nivel;
+    this.aplicarNivel(nivel);
     this.fitCamera();
     this.atualizarAreaDosFiltros();
   }
@@ -1364,18 +1475,15 @@ export class Renderer {
     }
 
     this.montagemQtd = n;
-    this.mascaraPronta = -1;
     this.montagemT = 0;
     this.montagemTanques = 0;
     this.mascaraParedes.clear();
-    if (!B3.includes('semMascara')) this.mazeView.wallLayer.mask = this.mascaraParedes;
+    this.mazeView.wallLayer.mask = this.mascaraParedes;
     if (this.sombraAlphaBase < 0) this.sombraAlphaBase = this.mazeView.wallShadowLayer.alpha;
-    if (!B3.includes('semAlfas')) {
-      this.mazeView.floorLayer.alpha = 0;
-      this.mazeView.wallShadowLayer.alpha = 0;
-      this.entitiesLayer.alpha = 0;
-      this.labelLayer.alpha = 0;
-    }
+    this.mazeView.floorLayer.alpha = 0;
+    this.mazeView.wallShadowLayer.alpha = 0;
+    this.entitiesLayer.alpha = 0;
+    this.labelLayer.alpha = 0;
   }
 
   /**
@@ -1391,21 +1499,10 @@ export class Renderer {
     this.montagemT += dt;
     const t = this.montagemT;
 
-    if (!B3.includes('semAlfasFrame')) this.mazeView.floorLayer.alpha = clamp01(t / MONTAGEM_PISO_S);
+    this.mazeView.floorLayer.alpha = clamp01(t / MONTAGEM_PISO_S);
 
     const g = this.mascaraParedes;
     const geo = this.montagemGeo;
-    if (B3.includes('mascaraEstatica')) {
-      if (this.mascaraPronta !== this.montagemQtd) {
-        this.mascaraPronta = this.montagemQtd;
-        g.clear();
-        for (let i = 0; i < this.montagemQtd; i++) {
-          const o = i * 5;
-          g.rect(geo[o]! - geo[o + 2]!, geo[o + 1]! - geo[o + 3]!, geo[o + 2]! * 2, geo[o + 3]! * 2);
-        }
-        g.fill(0xffffff);
-      }
-    } else if (!B3.includes('semMascara')) {
     g.clear();
     for (let i = 0; i < this.montagemQtd; i++) {
       const o = i * 5;
@@ -1421,12 +1518,11 @@ export class Renderer {
       g.rect(geo[o]! - hw * fx, geo[o + 1]! - hh * fy, hw * 2 * fx, hh * 2 * fy);
     }
     g.fill(0xffffff);
-    }
 
     // Frente de onda: um anel quente que passa por cima das paredes no instante em que elas
     // nascem. É o que dá CAUSA à sequência — sem ele as paredes só apareceriam sozinhas.
     const onda = clamp01((t - MONTAGEM_PAREDES_INICIO_S) / MONTAGEM_ONDA_S);
-    const acesa = onda > 0 && onda < 1 && !B3.includes('semOnda');
+    const acesa = onda > 0 && onda < 1;
     this.ondaMontagem.visible = acesa;
     if (acesa) {
       this.ondaMontagem
@@ -1437,11 +1533,9 @@ export class Renderer {
 
     const sombra = clamp01((t - MONTAGEM_SOMBRA_INICIO) / (MONTAGEM_TOTAL_S - MONTAGEM_SOMBRA_INICIO));
     this.montagemTanques = clamp01((t - MONTAGEM_TANQUES_INICIO_S) / MONTAGEM_TANQUES_S);
-    if (!B3.includes('semAlfasFrame')) {
-      this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase * sombra;
-      this.entitiesLayer.alpha = this.montagemTanques;
-      this.labelLayer.alpha = this.montagemTanques;
-    }
+    this.mazeView.wallShadowLayer.alpha = this.sombraAlphaBase * sombra;
+    this.entitiesLayer.alpha = this.montagemTanques;
+    this.labelLayer.alpha = this.montagemTanques;
 
     if (t < MONTAGEM_TOTAL_S) return;
 
@@ -1580,6 +1674,21 @@ export class Renderer {
     return best;
   }
 
+  /**
+   * Mede este frame e deixa o adaptador decidir (O1).
+   *
+   * O relógio vem de `performance.now()` e NÃO do `ticker.deltaMS`: o `Ticker` do Pixi trunca o
+   * delta em `_maxElapsedMS` (100 ms, do `minFPS` padrão de 10), então um frame de 567 ms — que
+   * é exatamente o caso de renderização por software que esta tarefa existe para achar — chegaria
+   * aqui disfarçado de 100 ms.
+   */
+  private medirDesempenho(): void {
+    const agora = performance.now();
+    this.painelDesempenho?.quadro(agora);
+    const novo = this.adaptador?.amostrar(agora, !document.hidden) ?? null;
+    if (novo !== null) this.aplicarNivel(novo);
+  }
+
   private onTick(): void {
     // `resizeTo` do Pixi só publica o novo tamanho no início do frame seguinte, e a página do
     // demo não escuta `resize` — refazer o enquadramento aqui garante arena centrada em qualquer
@@ -1587,6 +1696,8 @@ export class Renderer {
     if (this.app.screen.width !== this.lastScreenW || this.app.screen.height !== this.lastScreenH) {
       this.resize();
     }
+
+    this.medirDesempenho();
 
     const deltaMs = this.app.ticker.deltaMS;
     const worldDtS = this.juice.tick(deltaMs);
@@ -1624,7 +1735,7 @@ export class Renderer {
 
     // Só reatribui quando a lista mudou de verdade: `Container.filters =` reconstrói o efeito de
     // filtro do render group, e fazer isso todo frame é trabalho puro de graça.
-    const filtros = B3.includes('semFiltros') ? [] : this.post.filters;
+    const filtros = this.post.filters;
     if (filtros !== this.filtrosAplicados) {
       this.filtrosAplicados = filtros;
       this.world.filters = filtros;

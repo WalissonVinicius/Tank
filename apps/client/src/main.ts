@@ -1123,11 +1123,15 @@ async function runOnlineMode(params: URLSearchParams, renderer: Renderer, telas:
       }
     },
     onSnapshot: (tanks: SnapshotTank[]) => {
-      const agora = performance.now();
+      // O carimbo é a GRADE de 50 ms, não a hora de chegada: em produção o TCP entrega os
+      // snapshots em rajada depois de cada retransmissão, e carimbá-los pela chegada apagaria os
+      // 250 ms de movimento que a rajada carrega (ver `net/interpolation.ts`). Um carimbo por
+      // snapshot, compartilhado por todos os tanques dele.
+      const carimbo = interp.carimbar(performance.now());
       for (const t of tanks) {
         const id = slotToId.get(t.slot);
         if (!id) continue;
-        interp.push(id, { t: agora, x: t.x, y: t.y, heading: t.heading, turret: t.turret, alive: t.alive });
+        interp.push(id, { t: carimbo, x: t.x, y: t.y, heading: t.heading, turret: t.turret, alive: t.alive });
       }
     },
     onBulletSpawn: (msg: BulletSpawnMsg) => {

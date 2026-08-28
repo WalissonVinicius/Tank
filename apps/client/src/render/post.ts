@@ -9,6 +9,9 @@
 import { AdjustmentFilter, AdvancedBloomFilter, CRTFilter, RGBSplitFilter, ShockwaveFilter } from 'pixi-filters';
 import type { Filter } from 'pixi.js';
 
+/** Cadeia vazia do degrau `desligado`, reaproveitada — ver o `get filters`. */
+const SEM_FILTROS: Filter[] = [];
+
 const RGB_SPLIT_S = 0.1;
 const SHOCKWAVE_DURATION_S = 0.7;
 const SHOCKWAVE_AMPLITUDE = 15;
@@ -56,8 +59,15 @@ const CINZA_TAU_S = 0.11;
  * ~2,2 Mpx nada muda (1366×768 e 1920×1080 continuam com bloom quality 4 e CRT ligado); acima
  * disso a cadeia passa a rodar na resolução que devolve ~1,95 Mpx efetivos, que é exatamente o
  * ponto em que este GPU fecha 60 fps.
+ *
+ * O1: o degrau deixou de ser escolhido SÓ pelo tamanho da tela — o `AdaptadorDeQualidade` mede o
+ * tempo de frame de verdade e desce a escada sozinho. O que está aqui virou o ponto de PARTIDA e
+ * a definição de cada degrau; quem decide onde parar é `render/adaptativo.ts`.
  */
-export type NivelFx = 'alto' | 'reduzido' | 'minimo';
+export type NivelFx = 'alto' | 'reduzido' | 'minimo' | 'desligado';
+
+/** A escada, do mais bonito ao mais barato. É a ordem que o adaptador percorre. */
+export const DEGRAUS: readonly NivelFx[] = ['alto', 'reduzido', 'minimo', 'desligado'];
 
 export interface Qualidade {
   nivel: NivelFx;
@@ -69,6 +79,8 @@ interface PerfilFx {
   bloomQuality: number;
   bloomPixelSize: number;
   crt: boolean;
+  /** `true` no degrau que não tem cadeia nenhuma — nem bloom, nem ajuste de cor, nem onda. */
+  semCadeia?: boolean;
 }
 
 const PERFIS: Record<NivelFx, PerfilFx> = {
@@ -83,6 +95,15 @@ const PERFIS: Record<NivelFx, PerfilFx> = {
   // aparente. O bloom NÃO sai: é ele que faz a bala parecer incandescente, e sem isso o jogo
   // deixa de ser neon-noir e vira um diagrama.
   minimo: { bloomQuality: 1, bloomPixelSize: 2.6, crt: false },
+  // O CASO EXTREMO (O1 §2): nenhum filtro de tela cheia. Nem bloom, nem ajuste de cor, nem CRT —
+  // e o mundo deixa de pagar o ida-e-volta de render target que a cadeia exige.
+  //
+  // O comentário do `minimo` acima está certo: sem bloom o jogo deixa de ser neon-noir e vira um
+  // diagrama. Só que um diagrama a 60 fps é melhor que neon-noir a 2 fps, e aqui só cai quem não
+  // tem alternativa — máquina sem aceleração por hardware, onde o `minimo` (que ainda tem um
+  // passe de Kawase) media 2 fps em produção. O preço combinado é a perda do mundo em cinza da
+  // eliminação: o cartão de ELIMINADO do HUD continua dizendo isso em DOM.
+  desligado: { bloomQuality: 0, bloomPixelSize: 1, crt: false, semCadeia: true },
 };
 
 /**
@@ -109,6 +130,21 @@ const ORCAMENTO_MPX = 1.5;
  * texto) continua sendo rasterizado em resolução cheia.
  */
 const ALVO_MPX = 2.2;
+/**
+ * Orçamento de pixels da cadeia em cada degrau (O1 §1: "desça um degrau... e a resolução da
+ * cadeia junto").
+ *
+ * `alto` e `reduzido` mantêm o 2,2 medido na Fase 8 — em 1366×768 e 1080p isso devolve resolução
+ * 1, ou seja, quem tem folga continua com a cadeia na resolução nativa. O `minimo` aperta para
+ * 0,68, que em 1366×768 devolve 0,80: é o degrau a que só se chega quando a máquina já provou que
+ * não dá conta, e aí economizar 36% dos pixels da cadeia vale mais que a nitidez do halo.
+ */
+const ALVO_POR_NIVEL: Record<NivelFx, number> = {
+  alto: ALVO_MPX,
+  reduzido: ALVO_MPX,
+  minimo: 0.68,
+  desligado: 0,
+};
 /** Piso da resolução: abaixo disto a arena começa a ler como borrada, não como suave. */
 const RES_MIN = 0.55;
 
@@ -124,17 +160,31 @@ const RES_MIN = 0.55;
 const ALVO_MPX_TOQUE = 0.55;
 
 /**
- * Escolhe o degrau de pós-processamento. `toque` liga a régua do celular: degrau `minimo` sempre,
- * e resolução de cadeia proporcional ao orçamento mais apertado.
+ * Resolução com que a cadeia roda NESTE degrau, para este framebuffer.
+ *
+ * O `alto` só sai da resolução nativa acima do orçamento — é o que garante que quem tem folga
+ * continua com a imagem inteira (critério 5 da O1: otimização que estraga o visual de quem não
+ * precisa é regressão).
+ */
+export function qualidadeDoNivel(nivel: NivelFx, megapixels: number, toque = false): Qualidade {
+  if (nivel === 'desligado') return { nivel, resolucao: 1 };
+  if (nivel === 'alto' && !toque && megapixels <= ORCAMENTO_MPX) return { nivel, resolucao: 1 };
+  const alvo = toque ? ALVO_MPX_TOQUE : ALVO_POR_NIVEL[nivel];
+  const bruta = Math.sqrt(alvo / Math.max(0.01, megapixels));
+  return { nivel, resolucao: Math.max(RES_MIN, Math.min(1, Math.round(bruta * 100) / 100)) };
+}
+
+/**
+ * Degrau de PARTIDA, pelo tamanho do framebuffer. `toque` liga a régua do celular: degrau
+ * `minimo` sempre, e resolução de cadeia proporcional ao orçamento mais apertado.
+ *
+ * Isto continua sendo um chute — tamanho de tela não mede GPU. Só que é o único palpite
+ * disponível no primeiro frame, antes de existir amostra de tempo de frame; a partir daí quem
+ * manda é o `AdaptadorDeQualidade`.
  */
 export function qualidadePara(megapixels: number, toque = false): Qualidade {
-  if (toque) {
-    const bruta = Math.sqrt(ALVO_MPX_TOQUE / Math.max(0.01, megapixels));
-    return { nivel: 'minimo', resolucao: Math.max(RES_MIN, Math.min(1, Math.round(bruta * 100) / 100)) };
-  }
-  if (megapixels <= ORCAMENTO_MPX) return { nivel: 'alto', resolucao: 1 };
-  const bruta = Math.sqrt(ALVO_MPX / megapixels);
-  return { nivel: 'reduzido', resolucao: Math.max(RES_MIN, Math.min(1, Math.round(bruta * 100) / 100)) };
+  if (toque) return qualidadeDoNivel('minimo', megapixels, true);
+  return qualidadeDoNivel(megapixels <= ORCAMENTO_MPX ? 'alto' : 'reduzido', megapixels);
 }
 
 export class PostFX {
@@ -193,10 +243,14 @@ export class PostFX {
     if (q.nivel === this.qualidade.nivel && q.resolucao === this.qualidade.resolucao) return;
     this.qualidade = q;
     const perfil = PERFIS[q.nivel];
-    this.bloom.quality = perfil.bloomQuality;
-    this.bloom.pixelSize = perfil.bloomPixelSize;
-    for (const f of [this.adjust, this.bloom, this.crt, this.shockwave, this.rgbSplit]) {
-      f.resolution = q.resolucao;
+    // No degrau sem cadeia nada disto é lido — e escrever `quality = 0` no bloom faria o
+    // pixi-filters remontar os kernels do Kawase de graça.
+    if (perfil.semCadeia !== true) {
+      this.bloom.quality = perfil.bloomQuality;
+      this.bloom.pixelSize = perfil.bloomPixelSize;
+      for (const f of [this.adjust, this.bloom, this.crt, this.shockwave, this.rgbSplit]) {
+        f.resolution = q.resolucao;
+      }
     }
     // Força a remontagem da lista no próximo `get filters` (o CRT entra e sai por nível).
     this.composicaoAtual = -1;
@@ -293,6 +347,11 @@ export class PostFX {
    * reatribui quando o valor muda de verdade.
    */
   get filters(): Filter[] {
+    // Degrau `desligado`: lista VAZIA, sempre o mesmo array. A identidade estável importa — o
+    // `Renderer` só reatribui `world.filters` quando o valor muda, e devolver `[]` novo a cada
+    // frame faria o Pixi reconstruir o efeito de filtro do render group 60×/s justamente na
+    // máquina que menos aguenta isso.
+    if (PERFIS[this.qualidade.nivel].semCadeia === true) return SEM_FILTROS;
     const aquecendo = this.prewarmLeft > 0;
     const usaRgb = this.rgbSplitLeftS > 0 || aquecendo;
     const usaShock = this.shockwaveActive || aquecendo;
