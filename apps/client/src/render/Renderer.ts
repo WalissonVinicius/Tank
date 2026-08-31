@@ -878,6 +878,19 @@ export class Renderer {
       autoDensity: true,
       background: WORLD_COLORS.background,
       preference: ['webgl'],
+      // Num notebook com duas GPUs, o padrão do Chrome (`powerPreference: 'default'`) entrega a
+      // integrada. Medido em sala real de produção, mesmo backend d3d11, 35 s por amostra:
+      //
+      //   Intel Iris Xe (padrão) : 6-9% de frames ruins, 4-5 travadas acima de 500ms, pior 1700ms
+      //   GeForce GTX 1650       : 0%  de frames ruins, 0   travadas,                  pior   17ms
+      //
+      // O estol de segundos que a investigação perseguiu por dias era ISTO — não era filtro, nem
+      // textura, nem coleta de lixo, nem a simulação (ele acontecia até na tela de entrada, sem
+      // jogo rodando). Era o caminho ANGLE/D3D11 da Intel, e pedir a placa dedicada some com ele.
+      //
+      // Em máquina com só a integrada isto é inócuo: não há o que escolher, e quem cuida desse
+      // caso é a qualidade adaptativa (`render/adaptativo.ts`).
+      powerPreference: 'high-performance',
       // A janela inteira, não um retângulo fixo: `#game` é `inset: 0` dentro de `#app`, que é
       // `position: fixed; inset: 0`. Em tela cheia (Fullscreen API) o elemento acompanha sozinho.
       resizeTo: parent,
