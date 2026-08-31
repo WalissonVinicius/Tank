@@ -867,13 +867,18 @@ export class Renderer {
     // máquina que tem placa, e para destravar quem for pego por engano pela expressão de detecção.
     const swForcado = params.get('sw');
     semAceleracao = swForcado === null ? ehRenderizacaoPorSoftware(sondarRasterizador()) : swForcado === '1';
+    // `?aa=1|0` liga ou desliga o MSAA na marra, mesma ideia do `?sw=`. Existe para testar EM
+    // PRODUÇÃO uma hipótese que só se comprova na máquina do jogador: o estol de segundos do
+    // caminho ANGLE/D3D11 da Intel não aparece num controle de WebGL2 puro, e entre o que o Pixi
+    // faz a mais o suspeito mais direto é o alvo multiamostrado.
+    const aaForcado = params.get('aa');
 
     const app = new Application();
     await app.init({
       // MSAA é trabalho por amostra, e sem GPU cada amostra é a CPU. Onde ele mais custa é
       // exatamente onde ele menos aparece: a resolução já caiu para 0,4 (ver `DPR_MAX_SOFTWARE`)
       // e o navegador vai esticar o quadro de volta de qualquer jeito.
-      antialias: !semAceleracao,
+      antialias: aaForcado === null ? !semAceleracao : aaForcado === '1',
       resolution: Math.min(window.devicePixelRatio || 1, tetoDeDpr()),
       autoDensity: true,
       background: WORLD_COLORS.background,
