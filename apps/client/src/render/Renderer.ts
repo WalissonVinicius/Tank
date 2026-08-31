@@ -867,10 +867,18 @@ export class Renderer {
     // máquina que tem placa, e para destravar quem for pego por engano pela expressão de detecção.
     const swForcado = params.get('sw');
     semAceleracao = swForcado === null ? ehRenderizacaoPorSoftware(sondarRasterizador()) : swForcado === '1';
-    // `?aa=1|0` liga ou desliga o MSAA na marra, mesma ideia do `?sw=`. Existe para testar EM
-    // PRODUÇÃO uma hipótese que só se comprova na máquina do jogador: o estol de segundos do
-    // caminho ANGLE/D3D11 da Intel não aparece num controle de WebGL2 puro, e entre o que o Pixi
-    // faz a mais o suspeito mais direto é o alvo multiamostrado.
+    // `?aa=1|0` liga ou desliga o MSAA na marra, mesma ideia do `?sw=`.
+    //
+    // Nasceu para testar uma hipótese sobre o estol do caminho ANGLE/D3D11 da Intel, e a
+    // MEDIÇÃO A DERRUBOU. Sala real de produção, GPU integrada, 3 amostras de 35 s de cada lado
+    // (`SAMPLES` do contexto confirmou que a chave pegou: 4 contra 0):
+    //
+    //   aa=1 (MSAA ligado)    : 5,7 travadas acima de 500ms, pior média 1439ms
+    //   aa=0 (MSAA desligado) : 5,7 travadas acima de 500ms, pior média 1378ms
+    //
+    // Idêntico. Fica como chave de diagnóstico, e o comentário fica para que ninguém gaste o
+    // tempo de novo: MSAA não é o gatilho, como não são filtro, textura, coleta de lixo nem a
+    // simulação (o estol aparece até na tela de entrada).
     const aaForcado = params.get('aa');
 
     const app = new Application();
