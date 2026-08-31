@@ -878,18 +878,23 @@ export class Renderer {
       autoDensity: true,
       background: WORLD_COLORS.background,
       preference: ['webgl'],
-      // Num notebook com duas GPUs, o padrão do Chrome (`powerPreference: 'default'`) entrega a
-      // integrada. Medido em sala real de produção, mesmo backend d3d11, 35 s por amostra:
+      // A declaração correta para um jogo, mas NÃO CONTE COM ELA NO WINDOWS — medido, não suposto.
       //
-      //   Intel Iris Xe (padrão) : 6-9% de frames ruins, 4-5 travadas acima de 500ms, pior 1700ms
-      //   GeForce GTX 1650       : 0%  de frames ruins, 0   travadas,                  pior   17ms
+      // Num notebook com duas placas, QUAL delas o Chrome usa muda tudo. Sala real de produção,
+      // mesmo backend d3d11, 35 s por amostra:
       //
-      // O estol de segundos que a investigação perseguiu por dias era ISTO — não era filtro, nem
-      // textura, nem coleta de lixo, nem a simulação (ele acontecia até na tela de entrada, sem
-      // jogo rodando). Era o caminho ANGLE/D3D11 da Intel, e pedir a placa dedicada some com ele.
+      //   Intel Iris Xe   : 3-9% de frames ruins, 5-6 travadas acima de 500ms, pior 1717ms
+      //   GeForce GTX 1650: 0%   de frames ruins, 0   travadas,                pior   17ms
       //
-      // Em máquina com só a integrada isto é inócuo: não há o que escolher, e quem cuida desse
-      // caso é a qualidade adaptativa (`render/adaptativo.ts`).
+      // É a diferença entre o jogo travar e não travar. Mas esta linha não conquista a segunda:
+      // no Windows o Chrome escolhe o adaptador quando o processo de GPU nasce, e não por
+      // contexto WebGL — com ela ligada em produção o navegador continuou entregando a Intel e
+      // as 5-6 travadas. Só `--force_high_performance_gpu` (flag do NAVEGADOR) ou a preferência
+      // por aplicativo do Windows trocam de placa.
+      //
+      // Fica porque é a intenção certa a declarar e não custa nada. Não fica como solução: o
+      // estol do caminho ANGLE/D3D11 da Intel segue em aberto, e quem segura essas máquinas é a
+      // qualidade adaptativa (`render/adaptativo.ts`).
       powerPreference: 'high-performance',
       // A janela inteira, não um retângulo fixo: `#game` é `inset: 0` dentro de `#app`, que é
       // `position: fixed; inset: 0`. Em tela cheia (Fullscreen API) o elemento acompanha sozinho.
