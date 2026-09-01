@@ -1,10 +1,10 @@
-# Tank Ricochete — jogo FFA de navegador (PixiJS v8 + Colyseus)
+# Tank Ricochete — jogo FFA de navegador (PixiJS v8 + servidor Go)
 
 Você é um worker coordenado via Orca. Sua tarefa exata chega no preâmbulo de dispatch. **Siga o contrato abaixo à risca** — outros workers estão construindo partes vizinhas em paralelo e dependem dele.
 
 ## O jogo
 
-Arena 2D top-down de tanques em labirinto gerado por seed. **Até 10 colegas de trabalho**, todos contra todos, entram por link + código de sala de 4 letras, sem conta. Tanques lentos; balas ricocheteiam até 2× e matam em **1 toque — inclusive quem atirou** (o autogol é a piada central). Rodadas de 20–45 s, 10 rodadas por partida. Servidor Node autoritativo. Visual **neon-noir industrial**, tudo desenhado por código (procedural), sem nenhum arquivo de imagem.
+Arena 2D top-down de tanques em labirinto gerado por seed. **Até 10 colegas de trabalho**, todos contra todos, entram por link + código de sala de 4 letras, sem conta. Tanques lentos; balas ricocheteiam 1× e matam em **1 toque — inclusive quem atirou** (o autogol é a piada central). Rodadas de 20–45 s, 10 rodadas por partida. Servidor **Go** autoritativo (`go/server/`). Visual **neon-noir industrial**, tudo desenhado por código (procedural), sem nenhum arquivo de imagem.
 
 Pesquisa completa que embasa tudo isto: `C:\Users\walis\pesquisa-jogo-pixi\` — leia `G-tanques-design-e-arquitetura.md` (design, tuning, labirinto, netcode, plano) e `E-tanques-stack.md` (stack) antes de codar. O alvo visual é o mockup `mockups/tanques-ricochete.html` da mesma pasta (leia o código dele: lightmap, decalques e juice já estão resolvidos ali — porte, não reinvente).
 
@@ -13,19 +13,19 @@ Pesquisa completa que embasa tudo isto: `C:\Users\walis\pesquisa-jogo-pixi\` —
 | Tema | Decisão |
 |---|---|
 | Renderer | PixiJS 8.20.0, `preference: ['webgl']` **fixo** (nunca webgpu) |
-| Rede | Colyseus 0.17 — estado frio no Schema; **balas NUNCA no Schema** |
+| Rede | WebSocket cru (`github.com/coder/websocket`) — estado quente binário a 20 Hz, estado frio em JSON a 1 Hz; **balas NUNCA no estado** |
 | Balas | Servidor emite evento `bullet_spawn` (id, dono, x, y, ângulo, tick); **todo cliente simula localmente** com o mesmo código de `shared-sim`. Só a morte vem do servidor. |
-| Torre | **Travada no chassi** (gira junto, com atraso de mola cosmético de ~180 ms). Sem mira independente, sem mouse. |
+| Torre | **Segue o cursor do mouse** (`Input.aim`, ver `apps/client/src/input/controls.ts`). No celular, mira pelo polegar direito. |
 | Imunidade ao próprio tiro | **110 ms** (não 220 ms — o autogol precisa acontecer) |
 | Física | **Nenhuma engine.** Círculo×AABB + reflexão vetorial à mão, determinística |
 | Entidades | **Classes simples + arrays.** Sem ECS |
 | Arte | **100% procedural** (`PIXI.Graphics`, `RenderTexture`, texturas geradas em canvas). Nenhum PNG/SVG externo |
 | Build | TypeScript **5.9.3** e Vite **7.3.6** — NÃO usar TS 7 (tsgo) nem Vite 8 |
-| Deploy | Docker no Coolify: **1 container, 1 porta (3000)**, servidor Node serve o client estático + WebSocket na mesma porta |
+| Deploy | Docker no Coolify: **1 container, 1 porta (3000)**, o binário Go serve o client estático + WebSocket na mesma porta |
 
 ## Stack (versões fixas)
 
-`pixi.js@8.20.0` · `pixi-filters@6.1.5` · `colyseus@0.17.10` · `@colyseus/core@0.17.50` · `@colyseus/schema@4.0.31` · `@colyseus/sdk@0.17.43` · `gsap@3.15.0` · `@pixi/sound@6.0.1` · `zzfx@1.3.2` · `vite@7.3.6` · `typescript@5.9.3` · `tsx@4.23.12` · `tsup@8.5.1` · `vitest@4.1.11` · `better-sqlite3` (última 13.x) · `tweakpane@4.0.5` (dev)
+`pixi.js@8.20.0` · `pixi-filters@6.1.5` · `gsap@3.15.0` · `@pixi/sound@6.0.1` · `zzfx@1.3.2` · `vite@7.3.6` · `typescript@5.9.3` · `tsx@4.23.12` · `tsup@8.5.1` · `vitest@4.1.11` · `better-sqlite3` (última 13.x) · `tweakpane@4.0.5` (dev)
 
 ## Monorepo e propriedade de arquivos
 
@@ -35,12 +35,20 @@ tank/
 ├── packages/
 │   ├── protocol/src/        constants.ts (tuning), messages.ts (tipos), colors.ts
 │   └── shared-sim/src/      rng.ts, maze.ts, collision.ts, sim.ts, types.ts  (+ test/)
-└── apps/
-    ├── server/src/          index.ts, rooms/TankRoom.ts, state/*.ts, persist/*.ts
-    └── client/              index.html, src/main.ts, src/net/*, src/input/*, src/ui/*, src/render/*
+├── apps/
+│   ├── server/src/          servidor Node ANTIGO — fora de produção, mantido só como referência
+│   └── client/              index.html, src/main.ts, src/net/*, src/input/*, src/ui/*, src/render/*
+└── go/                      O SERVIDOR DE PRODUÇÃO (Go 1.27)
+    ├── server/              sala.go, rodada.go, codec.go — laço de tick, salas, protocolo
+    ├── sim/                 porte da simulação, espelho de packages/shared-sim
+    ├── internal/jsmath/     fdlibm do V8 portado — ver aviso abaixo
+    ├── persist/             ranking em SQLite (volume no Coolify)
+    └── compare.mjs          arnês de paridade TS × Go
 ```
 
 **Regra de ouro:** `apps/*` importam de `packages/*`; `packages/*` **nunca** importam de `apps/*`. `shared-sim` é matemática pura — **proibido** `document`, `window`, `Math.random()`, `Date.now()`, I/O. Recebe `dt` fixo e um RNG semeado.
+
+**A paridade é intocável.** `go/sim/` e `packages/shared-sim/` produzem resultado **bit a bit idêntico**, provado em 10.000 seeds. Mexeu num, tem que mexer no outro e rodar `node go/compare.mjs`. E não troque `go/internal/jsmath/` por `math.Sin/Cos/Atan2` do Go: eles divergem do V8 em ~25% dos ângulos, e é por isso que o fdlibm foi portado à mão.
 
 **Edite apenas os caminhos que a sua tarefa listar.** Se precisar de algo de outra área, use a interface publicada abaixo — não edite o arquivo do vizinho.
 
@@ -50,7 +58,7 @@ tank/
 // packages/protocol/src/constants.ts — FONTE DA VERDADE do tuning (§1.2 do relatório G)
 export const TICK_HZ = 60, SNAPSHOT_HZ = 20, CELL = 84;
 export const TANK_SPEED = 60, BULLET_SPEED = 215, TANK_RADIUS_F = 0.22, BULLET_RADIUS_F = 0.05;
-export const WALL_THICKNESS_F = 0.12, MAX_BOUNCES = 2, BULLET_LIFE = 5.5;
+export const WALL_THICKNESS_F = 0.12, MAX_BOUNCES = 1, BULLET_LIFE = 5.5;
 export const MAX_BULLETS = 3, FIRE_COOLDOWN = 0.35, TURN_RATE = 3.2, SELF_IMMUNITY = 0.11;
 export const ROUNDS = 10, ROUND_TIMEOUT = 45, COUNTDOWN = 3;
 
