@@ -867,18 +867,9 @@ export class Renderer {
     // máquina que tem placa, e para destravar quem for pego por engano pela expressão de detecção.
     const swForcado = params.get('sw');
     semAceleracao = swForcado === null ? ehRenderizacaoPorSoftware(sondarRasterizador()) : swForcado === '1';
-    // `?aa=1|0` liga ou desliga o MSAA na marra, mesma ideia do `?sw=`.
-    //
-    // Nasceu para testar uma hipótese sobre o estol do caminho ANGLE/D3D11 da Intel, e a
-    // MEDIÇÃO A DERRUBOU. Sala real de produção, GPU integrada, 3 amostras de 35 s de cada lado
-    // (`SAMPLES` do contexto confirmou que a chave pegou: 4 contra 0):
-    //
-    //   aa=1 (MSAA ligado)    : 5,7 travadas acima de 500ms, pior média 1439ms
-    //   aa=0 (MSAA desligado) : 5,7 travadas acima de 500ms, pior média 1378ms
-    //
-    // Idêntico. Fica como chave de diagnóstico, e o comentário fica para que ninguém gaste o
-    // tempo de novo: MSAA não é o gatilho, como não são filtro, textura, coleta de lixo nem a
-    // simulação (o estol aparece até na tela de entrada).
+    // `?aa=1|0` liga ou desliga o MSAA na marra, mesma ideia do `?sw=`. Nasceu para testar uma
+    // hipótese sobre o "estol da Intel" que se revelou inexistente (ver `MEDICAO.md`); fica como
+    // chave de diagnóstico.
     const aaForcado = params.get('aa');
 
     const app = new Application();
@@ -891,23 +882,12 @@ export class Renderer {
       autoDensity: true,
       background: WORLD_COLORS.background,
       preference: ['webgl'],
-      // A declaração correta para um jogo, mas NÃO CONTE COM ELA NO WINDOWS — medido, não suposto.
+      // A declaração correta para um jogo: num aparelho com duas placas, pede a dedicada. É uma
+      // DICA — no Windows o Chrome escolhe o adaptador quando o processo de GPU nasce e ignora
+      // este campo; no macOS e no Firefox ele pesa. Custa nada e não resolve nada sozinho.
       //
-      // Num notebook com duas placas, QUAL delas o Chrome usa muda tudo. Sala real de produção,
-      // mesmo backend d3d11, 35 s por amostra:
-      //
-      //   Intel Iris Xe   : 3-9% de frames ruins, 5-6 travadas acima de 500ms, pior 1717ms
-      //   GeForce GTX 1650: 0%   de frames ruins, 0   travadas,                pior   17ms
-      //
-      // É a diferença entre o jogo travar e não travar. Mas esta linha não conquista a segunda:
-      // no Windows o Chrome escolhe o adaptador quando o processo de GPU nasce, e não por
-      // contexto WebGL — com ela ligada em produção o navegador continuou entregando a Intel e
-      // as 5-6 travadas. Só `--force_high_performance_gpu` (flag do NAVEGADOR) ou a preferência
-      // por aplicativo do Windows trocam de placa.
-      //
-      // Fica porque é a intenção certa a declarar e não custa nada. Não fica como solução: o
-      // estol do caminho ANGLE/D3D11 da Intel segue em aberto, e quem segura essas máquinas é a
-      // qualidade adaptativa (`render/adaptativo.ts`).
+      // Não a use como remédio para travamento: o "estol da GPU Intel" que motivou esta linha
+      // não existe nos navegadores que as pessoas usam. Ver `MEDICAO.md`.
       powerPreference: 'high-performance',
       // A janela inteira, não um retângulo fixo: `#game` é `inset: 0` dentro de `#app`, que é
       // `position: fixed; inset: 0`. Em tela cheia (Fullscreen API) o elemento acompanha sozinho.
